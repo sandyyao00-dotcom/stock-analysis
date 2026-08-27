@@ -171,9 +171,9 @@ def fundamental_explanations(summary: FundamentalSummary, currency: str = "USD")
     info = summary.metrics
     metric_specs = {
         "估值": (
-            ("滚动市盈率（Trailing P/E）", "trailingPE", _ratio),
-            ("预期市盈率（Forward P/E）", "forwardPE", _ratio),
-            ("市销率（P/S）", "priceToSalesTrailing12Months", _ratio),
+            ("滚动市盈率（P/E）", "trailingPE", _ratio),
+            ("预期市盈率（P/E）", "forwardPE", _ratio),
+            ("市销率", "priceToSalesTrailing12Months", _ratio),
             ("市净率（P/B）", "priceToBook", _ratio),
             ("PEG（市盈增长比）", "pegRatio", _ratio),
             ("EV/EBITDA", "enterpriseToEbitda", _ratio),
@@ -190,7 +190,7 @@ def fundamental_explanations(summary: FundamentalSummary, currency: str = "USD")
             ("营业利润率", "operatingMargins", _percent),
             ("净利率", "profitMargins", _percent),
             ("净资产收益率（ROE）", "returnOnEquity", _percent),
-            ("总资产收益率（ROA）", "returnOnAssets", _percent),
+            ("总资产收益率", "returnOnAssets", _percent),
         ),
         "财务健康": (
             ("负债权益比", "debtToEquity", _ratio),

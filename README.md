@@ -1,4 +1,4 @@
-# Stock Analysis V5.1
+# Stock Analysis V5.2
 
 一个适合个人研究、对初学者友好的本地股票分析应用。界面使用 Streamlit，行情与公司资料通过免费的 `yfinance` 读取 Yahoo Finance 公开数据。无需 API Key、付费数据源或券商账户。
 
@@ -74,6 +74,16 @@
 - 为每篇新闻生成简短中文规则解释，不调用翻译或 AI 服务
 - 近期催化剂与风险只选取真实的潜在利好/利空标题，按时间排序并最多显示 3 条
 
+### 免费实时桥接与截图导入（V5.2）
+
+- 为 A 股提供手动实时输入、粘贴行情文字和上传行情截图三种方式
+- 三种方式都必须经过“解析/收集 → 可编辑预览 → 验证 → 用户确认”流程
+- 未确认候选数据不会进入可信实时展示，也不会影响任何下游分析
+- 已确认快照只保存在当前 Streamlit session，不写入磁盘
+- 支持与自动行情、MA20/MA50/MA200、支撑位和阻力位进行简单位置比较
+- 用户快照不会参与 RSI、MACD、移动平均线或技术评分计算
+- 本地 OCR 是可选组件；缺失时手动输入和粘贴文字仍正常工作
+
 ## 项目结构
 
 ```text
@@ -81,12 +91,16 @@ stock-analysis/
 |-- .gitignore
 |-- app.py
 |-- requirements.txt
+|-- requirements-ocr.txt
 |-- stock_analysis/
 |   |-- __init__.py
 |   |-- analysis.py
 |   |-- explanations.py
 |   |-- markets.py
 |   |-- news.py
+|   |-- ocr.py
+|   |-- providers.py
+|   |-- realtime_ui.py
 |   `-- fundamentals.py
 `-- README.md
 ```
@@ -97,6 +111,57 @@ stock-analysis/
 - `stock_analysis/explanations.py`：技术面/基本面规则式解释、优势风险排序与共振判断
 - `stock_analysis/markets.py`：市场选择、代码校验、Yahoo symbol 规范化与币种格式
 - `stock_analysis/news.py`：新闻读取、payload 归一化、去重、规则分类和事件标签
+- `stock_analysis/providers.py`：统一实时快照、provider 接口、中文行情解析、验证与位置比较
+- `stock_analysis/ocr.py`：可选的本地 Tesseract OCR 适配与安全降级
+- `stock_analysis/realtime_ui.py`：A 股实时数据预览、人工确认、session state 和来源展示
+
+## A 股用户实时行情
+
+自动免费行情可能延迟。选择“A股”后，可以在“实时行情补充”中：
+
+1. 手动输入当前价及可选行情字段；
+2. 粘贴从招商证券、同花顺、通达信、东方财富等软件复制的行情文字；
+3. 上传 PNG/JPG/JPEG 行情截图并使用可选本地 OCR。
+
+所有结果都会先显示为可编辑预览。只有点击“确认使用这组实时数据”后，数据才成为当前 session 的可信快照。清除按钮会从 session state 移除快照。
+
+解析器支持现价、涨跌额、涨跌幅、今开、最高、最低、昨收、成交量、成交额、换手率、股票代码、公司名称和时间，并在语义明确时处理 `万股`、`亿股`、`手`、`万手`、`万元`、`亿元` 等单位。单位缺失、多个现价候选或逻辑不一致时会要求人工核对，不会猜测小数点、正负号或单位。
+
+确认前会检查正数价格、非负成交量/成交额/换手率、最高与最低关系、开盘价区间，以及现价与昨收/涨跌额/涨跌幅的一致性。系统不会静默修改输入。
+
+## 可选本地 OCR
+
+V5.2 使用可选的 `pytesseract` 包装器，因为当前 Python 3.14 环境没有可直接使用的轻量 OCR 引擎，而 EasyOCR/RapidOCR 的模型和运行时依赖更重。主应用不强制安装 OCR。
+
+如需截图识别：
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+py -m pip install -r requirements-ocr.txt
+```
+
+还需要在 Windows 本机安装 Tesseract OCR 及简体中文 `chi_sim` 语言包，并确保 `tesseract` 可执行文件位于 `PATH`。如果组件不可用，页面会显示紧凑提示，手动与粘贴输入不受影响。
+
+截图只在本机处理，不发送到外部 OCR、AI 或云端服务。OCR 置信度仅作为复核提示，不代表金融数据真实可靠；截图结果永远不会自动确认。
+
+## Provider 架构
+
+所有 provider 返回统一 `RealtimeSnapshot`，包含 ticker、market、价格、涨跌、OHLC、成交量/额、换手率、时间、来源、输入方式、确认状态和置信度等字段。当前包含自动历史值、手动、粘贴文字和截图 provider，并预留未联网实现的：
+
+- `IFindRealtimeProvider`
+- `TushareRealtimeProvider`
+- `TongdaXinRealtimeProvider`
+- `BrokerageAPIProvider`
+
+这些未来接口目前不会发起任何网络请求。
+
+## 实时数据安全与隐私
+
+- 不请求或存储券商用户名、密码、账号、持仓、交易记录、Cookie；不自动登录或抓取券商应用。
+- 用户快照仅用于展示、与自动价的差异以及相对均线/支撑阻力的位置。
+- 单个快照不会用于实时 RSI、MACD、VWAP、分钟均线、日内量价趋势或技术评分。
+- 用户数据与自动行情差异超过 2% 时只显示核对警告，不自动判断哪一方正确。
+- 无时间数据明确显示“时间未提供”；超过 60 分钟显示“已过期”；非当天数据明确标示。
 
 ## 新闻方法与限制
 

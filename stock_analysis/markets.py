@@ -76,7 +76,7 @@ def currency_label(currency: str) -> str:
 
 
 def format_money(value: object, currency: str, compact: bool = False) -> str:
-    """Format a monetary value with a market-aware currency prefix."""
+    """Format a monetary value with a localized, suffix-style currency unit."""
     if isinstance(value, bool) or value is None:
         return "N/A"
     try:
@@ -87,7 +87,7 @@ def format_money(value: object, currency: str, compact: bool = False) -> str:
         return "N/A"
 
     code = currency.upper()
-    prefix = currency_prefix(code)
+    unit = {"USD": "美元", "CNY": "元", "HKD": "港元"}.get(code, code)
     if compact:
         if code == "CNY":
             if abs(number) >= 1_000_000_000_000:
@@ -99,7 +99,15 @@ def format_money(value: object, currency: str, compact: bool = False) -> str:
                 return f"{number / 1_000_000_000_000:,.2f} 万亿港元"
             if abs(number) >= 100_000_000:
                 return f"{number / 100_000_000:,.2f} 亿港元"
-        for divisor, suffix in ((1_000_000_000_000, "T"), (1_000_000_000, "B"), (1_000_000, "M")):
+        if code == "USD":
+            for divisor, suffix in (
+                (1_000_000_000_000, "万亿美元"),
+                (100_000_000, "亿美元"),
+                (10_000, "万美元"),
+            ):
+                if abs(number) >= divisor:
+                    return f"{number / divisor:,.2f} {suffix}"
+        for divisor, suffix in ((1_000_000_000_000, "万亿"), (100_000_000, "亿"), (10_000, "万")):
             if abs(number) >= divisor:
-                return f"{prefix}{number / divisor:,.2f}{suffix}"
-    return f"{prefix}{number:,.2f}"
+                return f"{number / divisor:,.2f} {suffix}{unit}"
+    return f"{number:,.2f} {unit}"

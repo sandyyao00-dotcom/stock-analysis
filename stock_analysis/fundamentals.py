@@ -59,9 +59,9 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 SCORING_METRIC_LABELS: dict[str, str] = {
-    "trailingPE": "滚动市盈率（Trailing P/E）",
-    "forwardPE": "预期市盈率（Forward P/E）",
-    "priceToSalesTrailing12Months": "市销率（P/S）",
+    "trailingPE": "滚动市盈率（P/E）",
+    "forwardPE": "预期市盈率（P/E）",
+    "priceToSalesTrailing12Months": "市销率",
     "priceToBook": "市净率（P/B）",
     "pegRatio": "PEG（市盈增长比）",
     "enterpriseToEbitda": "EV/EBITDA",
@@ -74,7 +74,7 @@ SCORING_METRIC_LABELS: dict[str, str] = {
     "operatingMargins": "营业利润率",
     "profitMargins": "净利率",
     "returnOnEquity": "净资产收益率（ROE）",
-    "returnOnAssets": "总资产收益率（ROA）",
+    "returnOnAssets": "总资产收益率",
     "debtToEquity": "负债权益比",
     "currentRatio": "流动比率",
     "quickRatio": "速动比率",
@@ -232,9 +232,9 @@ def analyze_fundamentals(ticker: str, info: dict[str, object], market: str = "�
     info = normalize_fundamental_fields(info)
 
     valuation_rules: tuple[Rule, ...] = (
-        ("trailingPE", "滚动市盈率（Trailing P/E）", _lower_is_better(15, 25, 40)),
-        ("forwardPE", "预期市盈率（Forward P/E）", _lower_is_better(15, 25, 40)),
-        ("priceToSalesTrailing12Months", "市销率（P/S）", _lower_is_better(2, 5, 10)),
+        ("trailingPE", "滚动市盈率（P/E）", _lower_is_better(15, 25, 40)),
+        ("forwardPE", "预期市盈率（P/E）", _lower_is_better(15, 25, 40)),
+        ("priceToSalesTrailing12Months", "市销率", _lower_is_better(2, 5, 10)),
         ("priceToBook", "市净率（P/B）", _lower_is_better(2, 5, 10)),
         ("pegRatio", "PEG（市盈增长比）", _lower_is_better(1, 2, 3)),
         ("enterpriseToEbitda", "EV/EBITDA", _lower_is_better(10, 18, 30)),
@@ -251,7 +251,7 @@ def analyze_fundamentals(ticker: str, info: dict[str, object], market: str = "�
         ("operatingMargins", "营业利润率", _higher_is_better(0.20, 0.10, 0)),
         ("profitMargins", "净利率", _higher_is_better(0.15, 0.05, 0)),
         ("returnOnEquity", "净资产收益率（ROE）", _higher_is_better(0.20, 0.10, 0)),
-        ("returnOnAssets", "总资产收益率（ROA）", _higher_is_better(0.10, 0.05, 0)),
+        ("returnOnAssets", "总资产收益率", _higher_is_better(0.10, 0.05, 0)),
     )
     health_info = dict(info)
     cash = _number(info.get("totalCash"))

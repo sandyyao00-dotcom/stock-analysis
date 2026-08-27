@@ -1,6 +1,7 @@
 """Streamlit interface for the personal stock analysis app."""
 
 from datetime import datetime, timezone
+from html import escape
 import math
 
 import plotly.graph_objects as go
@@ -18,6 +19,7 @@ from stock_analysis.explanations import (
 )
 from stock_analysis.fundamentals import analyze_fundamentals, fetch_company_info
 from stock_analysis.markets import (
+    MARKET_A_SHARE,
     SUPPORTED_MARKETS,
     SymbolValidationError,
     currency_label,
@@ -35,6 +37,8 @@ from stock_analysis.news import (
     recent_catalysts_and_risks,
     relative_age,
 )
+from stock_analysis.realtime_ui import render_ashare_realtime_panel
+from stock_analysis.ui_theme import apply_app_theme
 
 
 def price_volume_chart(data, sessions: int, currency: str) -> go.Figure:
@@ -138,8 +142,9 @@ TECHNICAL_LABELS = {
 
 
 st.set_page_config(page_title="股票分析 V4.1", page_icon="📈", layout="wide")
+apply_app_theme()
 st.title("个人股票分析")
-st.caption("使用免费公开市场数据，分别展示技术面与基本面分析；无需 API Key。")
+st.caption("使用免费公开市场数据，分别展示技术面与基本面分析；无需 API 密钥。")
 
 market_column, ticker_column, range_column = st.columns([1, 2, 1])
 with market_column:
@@ -209,36 +214,55 @@ st.caption(
     f"数据代码：{market_symbol.yahoo_symbol} ｜ 币种：{currency_label(currency)}"
 )
 overview_columns = st.columns(6)
-overview_columns[0].metric("当前价格", format_money(summary.current_price, currency))
+with overview_columns[0]:
+    with st.container(key="primary-price"):
+        st.metric("当前价格", format_money(summary.current_price, currency))
 overview_columns[1].metric("日涨跌", format_money(summary.price_change, currency), f"{summary.price_change_percent:+.2f}%")
 overview_columns[2].metric("MA20", format_money(summary.ma20, currency))
 overview_columns[3].metric("MA50", format_money(summary.ma50, currency))
 overview_columns[4].metric("MA200", format_money(summary.ma200, currency))
 overview_columns[5].metric("近期成交量", f"{summary.volume:,.0f}")
 
-st.subheader("技术面 / 基本面对比")
-comparison_columns = st.columns(2)
-comparison_columns[0].metric("技术评分", f"{summary.technical_score}/100", TECHNICAL_LABELS.get(summary.score_label, summary.score_label))
-if fundamentals and fundamentals.score is not None:
-    comparison_columns[1].metric("基本面评分", f"{fundamentals.score}/100", fundamentals.score_label)
-else:
-    comparison_columns[1].metric("基本面评分", "N/A", "数据不可用")
+if market_symbol.market == MARKET_A_SHARE:
+    render_ashare_realtime_panel(market_symbol, currency, summary)
+
+st.subheader("技术面与基本面对比")
+with st.container(key="primary-scores"):
+    comparison_columns = st.columns(2)
+    comparison_columns[0].metric("技术评分", f"{summary.technical_score}/100", TECHNICAL_LABELS.get(summary.score_label, summary.score_label))
+    if fundamentals and fundamentals.score is not None:
+        comparison_columns[1].metric("基本面评分", f"{fundamentals.score}/100", fundamentals.score_label)
+    else:
+        comparison_columns[1].metric("基本面评分", "N/A", "数据不可用")
 st.caption("两套评分彼此独立；V4 不生成综合投资评分或投资结论。")
 
 st.subheader("一句话分析摘要")
-st.write(f"**技术面一句话：** {narrative.technical_sentence}")
-st.write(f"**基本面一句话：** {narrative.fundamental_sentence}")
-st.write(f"**当前主要优势：** {narrative.main_strength}")
-st.write(f"**当前主要风险：** {narrative.main_risk}")
-st.write(f"**技术面与基本面是否一致：** {narrative.agreement}")
+summary_rows = (
+    ("技术面一句话", narrative.technical_sentence),
+    ("基本面一句话", narrative.fundamental_sentence),
+    ("当前主要优势", narrative.main_strength),
+    ("当前主要风险", narrative.main_risk),
+    ("技术面与基本面是否一致", narrative.agreement),
+)
+summary_html = "".join(
+    '<div class="quick-summary-row">'
+    f'<span class="quick-summary-label">{escape(label)}：</span>'
+    f'<span class="quick-summary-text">{escape(text)}</span>'
+    "</div>"
+    for label, text in summary_rows
+)
+st.markdown(f'<div class="quick-summary">{summary_html}</div>', unsafe_allow_html=True)
 
 st.header("技术面摘要")
-summary_columns = st.columns(5)
-summary_columns[0].metric("整体趋势", TECHNICAL_LABELS.get(summary.trend, summary.trend))
-summary_columns[1].metric("技术评分", f"{summary.technical_score}/100", TECHNICAL_LABELS.get(summary.score_label, summary.score_label))
-summary_columns[2].metric("动能", localize_technical_text(summary.momentum))
-summary_columns[3].metric("最近支撑", format_money(summary.support, currency))
-summary_columns[4].metric("最近阻力", format_money(summary.resistance, currency))
+with st.container(key="technical-summary"):
+    summary_columns = st.columns(5)
+    summary_columns[0].metric("整体趋势", TECHNICAL_LABELS.get(summary.trend, summary.trend))
+    summary_columns[1].metric("技术评分", f"{summary.technical_score}/100", TECHNICAL_LABELS.get(summary.score_label, summary.score_label))
+    with summary_columns[2]:
+        with st.container(key="momentum-summary"):
+            st.metric("动能", localize_technical_text(summary.momentum))
+    summary_columns[3].metric("最近支撑", format_money(summary.support, currency))
+    summary_columns[4].metric("最近阻力", format_money(summary.resistance, currency))
 factor_columns = st.columns(2)
 factor_columns[0].success(
     f"主要看多因素 — {technical_strengths[0].detail}" if technical_strengths else "主要看多因素 — 数据不足"
@@ -360,9 +384,9 @@ else:
     st.subheader("估值")
     show_metrics(
         (
-            ("滚动市盈率（Trailing P/E）", format_ratio(fundamentals.metrics.get("trailingPE"))),
-            ("预期市盈率（Forward P/E）", format_ratio(fundamentals.metrics.get("forwardPE"))),
-            ("市销率（P/S）", format_ratio(fundamentals.metrics.get("priceToSalesTrailing12Months"))),
+            ("滚动市盈率（P/E）", format_ratio(fundamentals.metrics.get("trailingPE"))),
+            ("预期市盈率（P/E）", format_ratio(fundamentals.metrics.get("forwardPE"))),
+            ("市销率", format_ratio(fundamentals.metrics.get("priceToSalesTrailing12Months"))),
             ("市净率（P/B）", format_ratio(fundamentals.metrics.get("priceToBook"))),
             ("PEG（市盈增长比）", format_ratio(fundamentals.metrics.get("pegRatio"))),
             ("企业价值（EV）", format_money(fundamentals.metrics.get("enterpriseValue"), currency, compact=True)),
@@ -389,7 +413,7 @@ else:
             ("营业利润率", format_percent(fundamentals.metrics.get("operatingMargins"))),
             ("净利率", format_percent(fundamentals.metrics.get("profitMargins"))),
             ("净资产收益率（ROE）", format_percent(fundamentals.metrics.get("returnOnEquity"))),
-            ("总资产收益率（ROA）", format_percent(fundamentals.metrics.get("returnOnAssets"))),
+            ("总资产收益率", format_percent(fundamentals.metrics.get("returnOnAssets"))),
         )
     )
 
@@ -483,7 +507,7 @@ else:
             st.markdown(f"**[{article.category}] [{article.event_label}]**")
             st.write(article.title)
             st.write(article.explanation)
-            published_text = article.published_at.strftime("%Y-%m-%d %H:%M UTC") if article.published_at else "发布时间未知"
+            published_text = article.published_at.strftime("%Y-%m-%d %H:%M（协调世界时）") if article.published_at else "发布时间未知"
             st.caption(
                 f"来源：{article.publisher or 'N/A'} ｜ {published_text} ｜ "
                 f"{relative_age(article.published_at)} ｜ {article.freshness}"
@@ -495,10 +519,10 @@ st.caption("新闻分类与利好/利空标签由本地规则生成，仅用于�
 st.divider()
 st.header("关键优势与风险")
 factor_sections = (
-    ("技术面 Top 3 优势", technical_strengths),
-    ("技术面 Top 3 风险", technical_risks),
-    ("基本面 Top 3 优势", fundamental_strengths),
-    ("基本面 Top 3 风险", fundamental_risks),
+    ("技术面前三项优势", technical_strengths),
+    ("技术面前三项风险", technical_risks),
+    ("基本面前三项优势", fundamental_strengths),
+    ("基本面前三项风险", fundamental_risks),
 )
 factor_columns = st.columns(2)
 for index, (title, factors) in enumerate(factor_sections):
@@ -517,7 +541,7 @@ st.caption("这里只比较两套现有评分的方向，不生成新的综合�
 st.divider()
 st.header("未来版本")
 future_items = (
-    ("AI 分析", "综合技术面与基本面的自然语言分析。"),
+    ("智能分析", "综合技术面与基本面的自然语言分析。"),
     ("持仓与成本分析", "仓位、平均成本、盈亏和风险敞口。"),
     ("自选股", "保存股票代码和个人研究笔记。"),
     ("A 股与港股支持", "扩展地区代码、财报字段和市场惯例。"),

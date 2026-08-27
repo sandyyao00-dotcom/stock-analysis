@@ -1,0 +1,4 @@
+# Optional local screenshot OCR. Tesseract OCR and the chi_sim language pack
+# must also be installed locally on Windows; the app works without this file.
+Pillow>=10,<13
+pytesseract>=0.3.13,<0.4
