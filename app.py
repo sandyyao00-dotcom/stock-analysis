@@ -12,6 +12,7 @@ from stock_analysis.explanations import (
     agreement_analysis,
     build_narrative,
     fundamental_explanations,
+    localize_technical_text,
     rank_factors,
     technical_explanations,
 )
@@ -19,6 +20,7 @@ from stock_analysis.fundamentals import analyze_fundamentals, fetch_company_info
 from stock_analysis.markets import (
     SUPPORTED_MARKETS,
     SymbolValidationError,
+    currency_label,
     format_money,
     normalize_symbol,
     reliable_currency,
@@ -161,7 +163,7 @@ fundamental_error = None
 try:
     with st.spinner(f"正在加载 {ticker} 的基本面数据..."):
         company_info = fetch_company_info(ticker)
-        fundamentals = analyze_fundamentals(ticker, company_info)
+        fundamentals = analyze_fundamentals(ticker, company_info, market_symbol.market)
 except ValueError as error:
     fundamental_error = str(error)
 except Exception:
@@ -189,7 +191,7 @@ narrative = build_narrative(
 st.header("股票概览")
 st.caption(
     f"市场：{market_symbol.market} ｜ 输入代码：{market_symbol.user_symbol} ｜ "
-    f"数据代码：{market_symbol.yahoo_symbol} ｜ 币种：{currency}"
+    f"数据代码：{market_symbol.yahoo_symbol} ｜ 币种：{currency_label(currency)}"
 )
 overview_columns = st.columns(6)
 overview_columns[0].metric("当前价格", format_money(summary.current_price, currency))
@@ -219,12 +221,16 @@ st.header("技术面摘要")
 summary_columns = st.columns(5)
 summary_columns[0].metric("整体趋势", TECHNICAL_LABELS.get(summary.trend, summary.trend))
 summary_columns[1].metric("技术评分", f"{summary.technical_score}/100", TECHNICAL_LABELS.get(summary.score_label, summary.score_label))
-summary_columns[2].metric("动能", summary.momentum.replace("Bullish", "看多").replace("Bearish", "看空").replace("Neutral/mixed", "中性/混合").replace(" MACD momentum", ""))
+summary_columns[2].metric("动能", localize_technical_text(summary.momentum))
 summary_columns[3].metric("最近支撑", format_money(summary.support, currency))
 summary_columns[4].metric("最近阻力", format_money(summary.resistance, currency))
 factor_columns = st.columns(2)
-factor_columns[0].success(f"主要看多因素 — {summary.main_bullish_factor}")
-factor_columns[1].warning(f"主要风险因素 — {summary.main_risk_factor}")
+factor_columns[0].success(
+    f"主要看多因素 — {technical_strengths[0].detail}" if technical_strengths else "主要看多因素 — 数据不足"
+)
+factor_columns[1].warning(
+    f"主要风险因素 — {technical_risks[0].detail}" if technical_risks else "主要风险因素 — 数据不足"
+)
 
 st.header("价格与成交量")
 st.plotly_chart(price_volume_chart(history, sessions, currency), use_container_width=True)
@@ -232,11 +238,11 @@ volume_columns = st.columns(3)
 volume_columns[0].metric("最新成交量", f"{summary.volume:,.0f}")
 volume_columns[1].metric("20 日平均成交量", f"{summary.average_volume:,.0f}")
 volume_columns[2].metric("成交量水平", TECHNICAL_LABELS.get(summary.volume_status, summary.volume_status))
-st.write(summary.volume_confirmation)
+st.write(localize_technical_text(summary.volume_confirmation))
 
 st.header("趋势 / 移动平均线")
-st.write(f"**均线排列：** {summary.ma_alignment}")
-st.write(f"**价格结构：** {summary.price_structure}")
+st.write(f"**均线排列：** {localize_technical_text(summary.ma_alignment)}")
+st.write(f"**价格结构：** {localize_technical_text(summary.price_structure)}")
 structure_columns = st.columns(4)
 structure_columns[0].metric("近 20 日高点", format_money(summary.recent_high, currency))
 structure_columns[1].metric("近 20 日低点", format_money(summary.recent_low, currency))
@@ -285,9 +291,9 @@ else:
         (
             ("公司名称", fundamentals.company_name),
             ("市场", market_symbol.market),
-            ("输入代码", market_symbol.user_symbol),
+            ("股票代码", market_symbol.user_symbol),
             ("数据代码", market_symbol.yahoo_symbol),
-            ("币种", currency),
+            ("币种", currency_label(currency)),
             ("板块", fundamentals.sector or "N/A"),
             ("行业", fundamentals.industry or "N/A"),
             ("市值", format_money(fundamentals.metrics.get("marketCap"), currency, compact=True)),
@@ -309,9 +315,32 @@ else:
     factor_columns = st.columns(2)
     factor_columns[0].success(f"主要正面因素 — {fundamentals.main_positive_factor}")
     factor_columns[1].warning(f"主要风险因素 — {fundamentals.main_risk_factor}")
-    st.info(f"数据覆盖率约 {fundamentals.coverage_percent}% 。缺失指标不按零分处理，而是从适用权重中排除。")
-    if market_symbol.market != "美股" and fundamentals.coverage_percent < 70:
+    st.info(
+        f"数据覆盖率约 {fundamentals.coverage_percent}%（{fundamentals.coverage_quality}）。"
+        "缺失指标不按零分处理，而是从适用权重中排除。"
+    )
+    if market_symbol.market != "美股" and fundamentals.coverage_percent < 80:
         st.warning(f"{market_symbol.market} 在 Yahoo Finance 的基本面字段覆盖较有限；当前评分仅基于已提供的数据。")
+
+    st.subheader("数据质量")
+    with st.expander(f"{fundamentals.coverage_quality} — 覆盖率 {fundamentals.coverage_percent}%"):
+        show_metrics(
+            (
+                ("市场", fundamentals.market),
+                ("标准化代码", market_symbol.yahoo_symbol),
+                ("币种", currency_label(currency)),
+                ("可用评分指标", str(fundamentals.available_metric_count)),
+                ("预期/适用指标", str(fundamentals.applicable_metric_count)),
+                ("覆盖率", f"{fundamentals.coverage_percent}%"),
+            ),
+            columns=3,
+        )
+        if fundamentals.missing_metrics:
+            st.write("**当前缺失的评分指标：**")
+            for metric in fundamentals.missing_metrics:
+                st.write(f"- {metric}")
+        else:
+            st.write("当前适用的评分指标均有数据。")
 
     st.subheader("估值")
     show_metrics(

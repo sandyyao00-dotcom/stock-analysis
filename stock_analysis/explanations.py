@@ -10,6 +10,32 @@ from stock_analysis.fundamentals import FundamentalSummary
 from stock_analysis.markets import format_money
 
 
+TECHNICAL_TEXT_ZH = {
+    "Bullish alignment (MA20 > MA50 > MA200)": "多头排列（MA20 > MA50 > MA200）",
+    "Bearish alignment (MA20 < MA50 < MA200)": "空头排列（MA20 < MA50 < MA200）",
+    "Short-term bullish alignment (MA20 > MA50)": "短期偏多排列（MA20 > MA50）",
+    "Short-term bearish alignment (MA20 < MA50)": "短期偏空排列（MA20 < MA50）",
+    "Mixed moving-average alignment": "均线排列混合",
+    "Higher highs and higher lows": "高点与低点同步抬高",
+    "Lower highs and lower lows": "高点与低点同步下移",
+    "Mixed highs and lows": "高低点结构混合",
+    "Overbought": "超买",
+    "Oversold": "超卖",
+    "Neutral": "中性",
+    "Bullish MACD momentum": "MACD 动能偏多",
+    "Bearish MACD momentum": "MACD 动能偏空",
+    "Neutral/mixed MACD momentum": "MACD 动能中性/混合",
+    "Bullish confirmation: price rose on above-average recent volume.": "量价偏多确认：价格上涨，近期成交量高于 20 日平均成交量。",
+    "Bearish confirmation: price fell on above-average recent volume.": "量价偏空确认：价格下跌，近期成交量高于 20 日平均成交量。",
+    "No strong volume confirmation: recent average volume did not exceed the 20-day average.": "暂无明显成交量确认：近期平均成交量未超过 20 日平均成交量。",
+}
+
+
+def localize_technical_text(text: str) -> str:
+    """Translate known technical result text for display without changing signals."""
+    return TECHNICAL_TEXT_ZH.get(text, text)
+
+
 @dataclass(frozen=True)
 class ScoreExplanation:
     """One score component with the exact metrics behind its existing points."""
@@ -104,11 +130,11 @@ def technical_explanations(summary: StockSummary, data: pd.DataFrame, currency: 
                 )
                 if item is not None
             ),
-            f"价格相对 MA20、MA20 相对 MA50，以及 MA50 相对 MA200 的位置共同决定本项得分。当前为：{summary.ma_alignment}。",
+            f"价格相对 MA20、MA20 相对 MA50，以及 MA50 相对 MA200 的位置共同决定本项得分。当前为：{localize_technical_text(summary.ma_alignment)}。",
         ),
         "RSI": (
             "RSI",
-            (f"RSI(14)：{summary.rsi:.2f}", f"状态：{summary.rsi_status}"),
+            (f"RSI(14)：{summary.rsi:.2f}", f"状态：{localize_technical_text(summary.rsi_status)}"),
             f"RSI 当前为 {summary.rsi:.2f}。现有评分规则把该区间作为动能参考；超买或超卖仅是提示，不是买卖信号。",
         ),
         "MACD": (
@@ -123,12 +149,12 @@ def technical_explanations(summary: StockSummary, data: pd.DataFrame, currency: 
         "Price structure": (
             "价格结构",
             (f"近 20 日高点：{format_money(summary.recent_high, currency)}", f"近 20 日低点：{format_money(summary.recent_low, currency)}"),
-            f"最近两个 20 交易日区间被识别为“{summary.price_structure}”，现有价格结构分数据此产生。",
+            f"最近两个 20 交易日区间被识别为“{localize_technical_text(summary.price_structure)}”，现有价格结构分数据此产生。",
         ),
         "Volume": (
             "成交量",
             (f"最新成交量：{summary.volume:,.0f}", f"20 日平均成交量：{summary.average_volume:,.0f}"),
-            summary.volume_confirmation,
+            localize_technical_text(summary.volume_confirmation),
         ),
     }
 

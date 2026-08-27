@@ -25,6 +25,7 @@ class FundamentalSummary:
     """Company information, score, and high-level assessments."""
 
     ticker: str
+    market: str
     company_name: str
     sector: str | None
     industry: str | None
@@ -34,6 +35,10 @@ class FundamentalSummary:
     score: int | None
     score_label: str
     coverage_percent: int
+    coverage_quality: str
+    available_metric_count: int
+    applicable_metric_count: int
+    missing_metrics: tuple[str, ...]
     components: tuple[FundamentalScoreComponent, ...]
     valuation_assessment: str
     growth_assessment: str
@@ -47,6 +52,40 @@ class FundamentalSummary:
 Rule = tuple[str, str, Callable[[float], float]]
 
 
+FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    # These fallbacks have equivalent or directly compatible meanings.
+    "longName": ("longName", "shortName"),
+    "pegRatio": ("pegRatio", "trailingPegRatio"),
+}
+
+SCORING_METRIC_LABELS: dict[str, str] = {
+    "trailingPE": "滚动市盈率（Trailing P/E）",
+    "forwardPE": "预期市盈率（Forward P/E）",
+    "priceToSalesTrailing12Months": "市销率（P/S）",
+    "priceToBook": "市净率（P/B）",
+    "pegRatio": "PEG（市盈增长比）",
+    "enterpriseToEbitda": "EV/EBITDA",
+    "revenueGrowth": "营收增长",
+    "earningsGrowth": "盈利增长",
+    "epsGrowth": "EPS 增长",
+    "earningsQuarterlyGrowth": "季度盈利增长",
+    "revenueQuarterlyGrowth": "季度营收增长",
+    "grossMargins": "毛利率",
+    "operatingMargins": "营业利润率",
+    "profitMargins": "净利率",
+    "returnOnEquity": "净资产收益率（ROE）",
+    "returnOnAssets": "总资产收益率（ROA）",
+    "debtToEquity": "负债权益比",
+    "currentRatio": "流动比率",
+    "quickRatio": "速动比率",
+    "cashToDebt": "现金/债务",
+    "freeCashflow": "自由现金流",
+    "operatingCashflow": "经营现金流",
+    "dividendYield": "股息率",
+    "payoutRatio": "派息率",
+}
+
+
 def _number(value: object) -> float | None:
     """Return a finite number or None for missing/non-numeric Yahoo fields."""
     if isinstance(value, bool) or value is None:
@@ -56,6 +95,28 @@ def _number(value: object) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def normalize_fundamental_fields(raw_info: dict[str, object]) -> dict[str, object]:
+    """Return canonical Yahoo fields using only financially compatible aliases."""
+    normalized = dict(raw_info)
+    for canonical, candidates in FIELD_ALIASES.items():
+        if normalized.get(canonical) not in (None, ""):
+            continue
+        for candidate in candidates:
+            value = raw_info.get(candidate)
+            if value not in (None, ""):
+                normalized[canonical] = value
+                break
+    return normalized
+
+
+def _coverage_quality(coverage: int) -> str:
+    if coverage >= 80:
+        return "数据覆盖良好"
+    if coverage >= 60:
+        return "部分指标缺失"
+    return "数据覆盖较低，评分参考价值下降"
 
 
 def _lower_is_better(good: float, fair: float, high: float) -> Callable[[float], float]:
@@ -166,11 +227,9 @@ def fetch_company_info(ticker: str) -> dict[str, object]:
     return info
 
 
-def analyze_fundamentals(ticker: str, info: dict[str, object]) -> FundamentalSummary:
+def analyze_fundamentals(ticker: str, info: dict[str, object], market: str = "未知") -> FundamentalSummary:
     """Create company details and normalize a score across available data only."""
-    info = dict(info)
-    if _number(info.get("pegRatio")) is None and _number(info.get("trailingPegRatio")) is not None:
-        info["pegRatio"] = info["trailingPegRatio"]
+    info = normalize_fundamental_fields(info)
 
     valuation_rules: tuple[Rule, ...] = (
         ("trailingPE", "滚动市盈率（Trailing P/E）", _lower_is_better(15, 25, 40)),
@@ -199,6 +258,7 @@ def analyze_fundamentals(ticker: str, info: dict[str, object]) -> FundamentalSum
     debt = _number(info.get("totalDebt"))
     if cash is not None and debt is not None and debt > 0:
         health_info["cashToDebt"] = cash / debt
+        info["cashToDebt"] = cash / debt
     health_rules: tuple[Rule, ...] = (
         ("debtToEquity", "负债权益比", _lower_is_better(50, 100, 200)),
         ("currentRatio", "流动比率", _range_score(1.5, 3.0, 1.0, 5.0)),
@@ -236,6 +296,12 @@ def analyze_fundamentals(ticker: str, info: dict[str, object]) -> FundamentalSum
     metrics_found = sum(item.metrics_found for item in components)
     metrics_possible = sum(item.metrics_possible for item in components[:-1]) + (len(dividend_rules) if pays_dividend else 0)
     coverage = round(metrics_found / metrics_possible * 100) if metrics_possible else 0
+    applicable_keys = list(SCORING_METRIC_LABELS)[:-2]
+    if pays_dividend:
+        applicable_keys.extend(("dividendYield", "payoutRatio"))
+    missing_metrics = tuple(
+        SCORING_METRIC_LABELS[key] for key in applicable_keys if _number(info.get(key)) is None
+    )
 
     strongest = max(applicable, key=lambda item: (item.points or 0) / item.weight, default=None)
     weakest = min(applicable, key=lambda item: (item.points or 0) / item.weight, default=None)
@@ -244,6 +310,7 @@ def analyze_fundamentals(ticker: str, info: dict[str, object]) -> FundamentalSum
 
     return FundamentalSummary(
         ticker=ticker.strip().upper(),
+        market=market,
         company_name=str(info.get("longName") or info.get("shortName") or ticker),
         sector=info.get("sector"),
         industry=info.get("industry"),
@@ -253,6 +320,10 @@ def analyze_fundamentals(ticker: str, info: dict[str, object]) -> FundamentalSum
         score=score,
         score_label=_score_label(score),
         coverage_percent=coverage,
+        coverage_quality=_coverage_quality(coverage),
+        available_metric_count=metrics_found,
+        applicable_metric_count=metrics_possible,
+        missing_metrics=missing_metrics,
         components=tuple(components),
         valuation_assessment=_assessment(components[0]),
         growth_assessment=_assessment(components[1]),

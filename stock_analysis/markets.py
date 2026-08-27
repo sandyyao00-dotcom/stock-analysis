@@ -69,6 +69,12 @@ def currency_prefix(currency: str) -> str:
     return {"USD": "$", "CNY": "¥", "HKD": "HK$"}.get(currency.upper(), f"{currency.upper()} ")
 
 
+def currency_label(currency: str) -> str:
+    """Return a localized currency label without guessing an exchange."""
+    code = currency.upper()
+    return {"USD": "USD / 美元", "CNY": "CNY / 人民币", "HKD": "HKD / 港元"}.get(code, code)
+
+
 def format_money(value: object, currency: str, compact: bool = False) -> str:
     """Format a monetary value with a market-aware currency prefix."""
     if isinstance(value, bool) or value is None:
@@ -80,8 +86,19 @@ def format_money(value: object, currency: str, compact: bool = False) -> str:
     if not math.isfinite(number):
         return "N/A"
 
-    prefix = currency_prefix(currency)
+    code = currency.upper()
+    prefix = currency_prefix(code)
     if compact:
+        if code == "CNY":
+            if abs(number) >= 1_000_000_000_000:
+                return f"{number / 1_000_000_000_000:,.2f} 万亿元人民币"
+            if abs(number) >= 100_000_000:
+                return f"{number / 100_000_000:,.2f} 亿元人民币"
+        if code == "HKD":
+            if abs(number) >= 1_000_000_000_000:
+                return f"{number / 1_000_000_000_000:,.2f} 万亿港元"
+            if abs(number) >= 100_000_000:
+                return f"{number / 100_000_000:,.2f} 亿港元"
         for divisor, suffix in ((1_000_000_000_000, "T"), (1_000_000_000, "B"), (1_000_000, "M")):
             if abs(number) >= divisor:
                 return f"{prefix}{number / divisor:,.2f}{suffix}"
