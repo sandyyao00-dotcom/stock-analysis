@@ -8,6 +8,13 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 from stock_analysis.analysis import fetch_stock_data, summarize_stock
+from stock_analysis.explanations import (
+    agreement_analysis,
+    build_narrative,
+    fundamental_explanations,
+    rank_factors,
+    technical_explanations,
+)
 from stock_analysis.fundamentals import analyze_fundamentals, fetch_company_info
 
 
@@ -160,6 +167,23 @@ except ValueError as error:
 except Exception:
     fundamental_error = "基本面分析暂时无法完成，请稍后重试。"
 
+technical_details = technical_explanations(summary, history)
+technical_strengths, technical_risks = rank_factors(technical_details)
+fundamental_details = fundamental_explanations(fundamentals) if fundamentals else ()
+fundamental_strengths, fundamental_risks = rank_factors(fundamental_details)
+fundamental_score = fundamentals.score if fundamentals else None
+fundamental_label = fundamentals.score_label if fundamentals else "数据不足"
+narrative = build_narrative(
+    summary.technical_score,
+    TECHNICAL_LABELS.get(summary.score_label, summary.score_label),
+    fundamental_score,
+    fundamental_label,
+    technical_strengths,
+    technical_risks,
+    fundamental_strengths,
+    fundamental_risks,
+)
+
 st.header("股票概览")
 overview_columns = st.columns(6)
 overview_columns[0].metric("当前价格", f"${summary.current_price:,.2f}")
@@ -176,7 +200,14 @@ if fundamentals and fundamentals.score is not None:
     comparison_columns[1].metric("基本面评分", f"{fundamentals.score}/100", fundamentals.score_label)
 else:
     comparison_columns[1].metric("基本面评分", "N/A", "数据不可用")
-st.caption("两套评分彼此独立；V3 不生成综合投资评分或投资结论。")
+st.caption("两套评分彼此独立；V4 不生成综合投资评分或投资结论。")
+
+st.subheader("一句话分析摘要")
+st.write(f"**技术面一句话：** {narrative.technical_sentence}")
+st.write(f"**基本面一句话：** {narrative.fundamental_sentence}")
+st.write(f"**当前主要优势：** {narrative.main_strength}")
+st.write(f"**当前主要风险：** {narrative.main_risk}")
+st.write(f"**技术面与基本面是否一致：** {narrative.agreement}")
 
 st.header("技术面摘要")
 summary_columns = st.columns(5)
@@ -231,9 +262,11 @@ st.caption("根据约 90 个交易日内的五日枢轴高低点估算；找不�
 
 st.header("技术评分明细")
 st.progress(summary.technical_score, text=f"{summary.technical_score}/100 — {TECHNICAL_LABELS.get(summary.score_label, summary.score_label)}")
-for component in summary.score_components:
-    with st.expander(f"{component.name}: {component.points}/{component.maximum}"):
-        st.write(component.explanation)
+for detail in technical_details:
+    with st.expander(f"{detail.name}：{detail.points:.0f}/{detail.maximum}"):
+        for metric in detail.metrics:
+            st.write(f"- {metric}")
+        st.write(f"**解释：** {detail.explanation}")
 st.caption("80–100 强势看多；60–79 看多；40–59 中性；20–39 看空；0–19 强势看空。")
 
 st.divider()
@@ -345,11 +378,37 @@ else:
     st.subheader("基本面评分明细")
     if fundamentals.score is not None:
         st.progress(fundamentals.score, text=f"{fundamentals.score}/100 — {fundamentals.score_label}")
-    for component in fundamentals.components:
-        points = "N/A" if component.points is None else f"{component.points:.1f}"
-        with st.expander(f"{component.name}: {points}/{component.weight}（覆盖 {component.metrics_found}/{component.metrics_possible}）"):
-            st.write(component.explanation)
+    for detail in fundamental_details:
+        points = "N/A" if detail.points is None else f"{detail.points:.1f}"
+        with st.expander(f"{detail.name}：{points}/{detail.maximum}（覆盖 {detail.coverage}）"):
+            if detail.metrics:
+                st.write("**本项使用的可用指标：**")
+                for metric in detail.metrics:
+                    st.write(f"- {metric}")
+            st.write(f"**解释：** {detail.explanation}")
     st.caption("权重：估值 20、增长 20、盈利能力 20、财务健康 20、现金流 15、股东回报/股息 5。80–100 强；60–79 良好；40–59 一般；20–39 偏弱；0–19 很弱。")
+
+st.divider()
+st.header("关键优势与风险")
+factor_sections = (
+    ("技术面 Top 3 优势", technical_strengths),
+    ("技术面 Top 3 风险", technical_risks),
+    ("基本面 Top 3 优势", fundamental_strengths),
+    ("基本面 Top 3 风险", fundamental_risks),
+)
+factor_columns = st.columns(2)
+for index, (title, factors) in enumerate(factor_sections):
+    with factor_columns[index % 2]:
+        st.subheader(title)
+        if factors:
+            for rank, factor in enumerate(factors, start=1):
+                st.write(f"{rank}. **{factor.name}（{factor.points:.1f}/{factor.maximum}）** — {factor.detail}")
+        else:
+            st.caption("可用数据不足。")
+
+st.header("技术面与基本面的共振 / 分歧")
+st.info(agreement_analysis(summary.technical_score, fundamental_score))
+st.caption("这里只比较两套现有评分的方向，不生成新的综合分数，也不构成投资建议。")
 
 st.divider()
 st.header("未来版本")
