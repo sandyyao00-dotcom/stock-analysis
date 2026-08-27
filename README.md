@@ -1,4 +1,4 @@
-# Stock Analysis V4.2
+# Stock Analysis V5
 
 一个适合个人研究、对初学者友好的本地股票分析应用。界面使用 Streamlit，行情与公司资料通过免费的 `yfinance` 读取 Yahoo Finance 公开数据。无需 API Key、付费数据源或券商账户。
 
@@ -55,6 +55,17 @@
 - Coverage 只反映完整度，不影响基本面得分；缺失字段继续从适用权重中排除
 - CNY/HKD 大额数据优先使用亿元、万亿元人民币或亿港元、万亿港元显示
 
+### 新闻与催化剂（V5）
+
+- 使用 Yahoo Finance / `yfinance` 的免费新闻数据，无需 API Key
+- 兼容当前嵌套 `content` payload 和旧版扁平 payload
+- 归一化标题、来源、发布时间、链接、内容类型和相关 ticker
+- 通过透明的中英文关键词规则分类财报、指引、产品、并购、股息、评级、监管等事件
+- 保守标记“潜在利好”“潜在利空”或“中性/待确认”，不预测股价
+- 显示最新程度、相对时间、近期催化剂和近期风险
+- 新闻缓存 20 分钟；新闻失败不会阻止技术面和基本面加载
+- V5 不创建新闻评分，也不把新闻加入技术或基本面评分
+
 ## 项目结构
 
 ```text
@@ -67,6 +78,7 @@ stock-analysis/
 |   |-- analysis.py
 |   |-- explanations.py
 |   |-- markets.py
+|   |-- news.py
 |   `-- fundamentals.py
 `-- README.md
 ```
@@ -76,6 +88,20 @@ stock-analysis/
 - `stock_analysis/fundamentals.py`：公司资料、基本面指标和基本面评分
 - `stock_analysis/explanations.py`：技术面/基本面规则式解释、优势风险排序与共振判断
 - `stock_analysis/markets.py`：市场选择、代码校验、Yahoo symbol 规范化与币种格式
+- `stock_analysis/news.py`：新闻读取、payload 归一化、去重、规则分类和事件标签
+
+## 新闻方法与限制
+
+新闻标题保持数据源原文，不使用 AI 自动翻译。分类按关键词确定性匹配，例如：
+
+- `earnings`、`revenue`、`profit`、`EPS` → 财报 / 业绩
+- `guidance`、`outlook`、`forecast` → 业绩指引
+- `dividend`、`buyback`、`repurchase` → 股息 / 回购
+- `upgrade`、`downgrade`、`price target` → 分析师评级
+- `lawsuit`、`investigation`、`regulator`、`antitrust` → 监管 / 法律
+- `acquisition`、`acquire`、`merger` → 并购 / 投资
+
+利好/利空标签描述标题所呈现事件的表面性质，不表示未来价格方向。含义不明确或同时出现正负关键词时优先标为“中性/待确认”。Yahoo 对 A 股和港股的新闻数量可能明显少于美股；没有新闻不代表中性情绪，也不影响任何评分。
 
 ## 支持市场与代码规范化
 
@@ -175,11 +201,10 @@ V2 的独立技术评分保持不变：趋势 20、移动平均线 20、RSI 15�
 - Yahoo Finance 通常不提供完整的历史估值序列，因此 V3 不推断历史估值高低。
 - 免费数据不适合作为交易执行或实时风控依据。
 
-基本面查询缓存 1 小时，价格查询缓存 15 分钟，以减少重复请求。解释层使用已经获取的数据，不发起额外网络请求。
+基本面查询缓存 1 小时，价格查询缓存 15 分钟，新闻查询缓存 20 分钟，以减少重复请求。解释层使用已经获取的数据，不发起额外网络请求。
 
 ## 未来版本（尚未实现）
 
-- 新闻与催化剂分析
 - AI 生成的综合分析或投资结论
 - 持仓与成本基础分析
 - 自选股与研究笔记

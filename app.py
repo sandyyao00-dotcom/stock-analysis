@@ -25,6 +25,16 @@ from stock_analysis.markets import (
     normalize_symbol,
     reliable_currency,
 )
+from stock_analysis.news import (
+    LABEL_NEGATIVE,
+    LABEL_NEUTRAL,
+    LABEL_POSITIVE,
+    NewsResult,
+    fetch_news,
+    label_counts,
+    recent_catalysts_and_risks,
+    relative_age,
+)
 
 
 def price_volume_chart(data, sessions: int, currency: str) -> go.Figure:
@@ -168,6 +178,11 @@ except ValueError as error:
     fundamental_error = str(error)
 except Exception:
     fundamental_error = "基本面分析暂时无法完成，请稍后重试。"
+
+try:
+    news_result = fetch_news(ticker)
+except Exception:
+    news_result = NewsResult(0, (), "新闻数据暂时不可用，不影响技术面与基本面分析。")
 
 provider_currency = fundamentals.metrics.get("currency") if fundamentals else None
 currency = reliable_currency(provider_currency, market_symbol.default_currency)
@@ -429,6 +444,54 @@ else:
     st.caption("权重：估值 20、增长 20、盈利能力 20、财务健康 20、现金流 15、股东回报/股息 5。80–100 强；60–79 良好；40–59 一般；20–39 偏弱；0–19 很弱。")
 
 st.divider()
+st.header("新闻与催化剂")
+st.caption("新闻数据来源：Yahoo Finance / yfinance")
+if news_result.error:
+    st.warning(news_result.error)
+elif not news_result.articles:
+    st.info("当前数据源未返回可用新闻。")
+else:
+    news_counts = label_counts(news_result.articles)
+    latest_article = news_result.articles[0]
+    news_columns = st.columns(5)
+    news_columns[0].metric("最近新闻", f"{len(news_result.articles)} 条")
+    news_columns[1].metric("最新消息", relative_age(latest_article.published_at))
+    news_columns[2].metric(LABEL_POSITIVE, news_counts[LABEL_POSITIVE])
+    news_columns[3].metric(LABEL_NEGATIVE, news_counts[LABEL_NEGATIVE])
+    news_columns[4].metric(LABEL_NEUTRAL, news_counts[LABEL_NEUTRAL])
+
+    catalysts, news_risks = recent_catalysts_and_risks(news_result.articles)
+    catalyst_column, risk_column = st.columns(2)
+    with catalyst_column:
+        st.subheader("主要近期催化剂")
+        if catalysts:
+            for item in catalysts:
+                st.write(f"- {item}")
+        else:
+            st.caption("暂无明确近期催化剂。")
+    with risk_column:
+        st.subheader("主要近期风险")
+        if news_risks:
+            for item in news_risks:
+                st.write(f"- {item}")
+        else:
+            st.caption("暂无明确近期风险。")
+
+    st.subheader("最新新闻")
+    for index, article in enumerate(news_result.articles):
+        with st.container(border=True):
+            st.markdown(f"**[{article.category}] [{article.event_label}]**")
+            st.write(article.title)
+            published_text = article.published_at.strftime("%Y-%m-%d %H:%M UTC") if article.published_at else "发布时间未知"
+            st.caption(
+                f"来源：{article.publisher or 'N/A'} ｜ {published_text} ｜ "
+                f"{relative_age(article.published_at)} ｜ {article.freshness}"
+            )
+            st.link_button("查看原文", article.url, key=f"news-link-{index}")
+
+st.caption("新闻分类与利好/利空标签由本地规则生成，仅用于信息整理，不代表未来股价表现或投资建议。")
+
+st.divider()
 st.header("关键优势与风险")
 factor_sections = (
     ("技术面 Top 3 优势", technical_strengths),
@@ -453,7 +516,6 @@ st.caption("这里只比较两套现有评分的方向，不生成新的综合�
 st.divider()
 st.header("未来版本")
 future_items = (
-    ("新闻与催化剂分析", "公司新闻、事件和市场情绪。"),
     ("AI 分析", "综合技术面与基本面的自然语言分析。"),
     ("持仓与成本分析", "仓位、平均成本、盈亏和风险敞口。"),
     ("自选股", "保存股票代码和个人研究笔记。"),
