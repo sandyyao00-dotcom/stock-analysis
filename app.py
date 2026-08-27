@@ -16,9 +16,16 @@ from stock_analysis.explanations import (
     technical_explanations,
 )
 from stock_analysis.fundamentals import analyze_fundamentals, fetch_company_info
+from stock_analysis.markets import (
+    SUPPORTED_MARKETS,
+    SymbolValidationError,
+    format_money,
+    normalize_symbol,
+    reliable_currency,
+)
 
 
-def price_volume_chart(data, sessions: int) -> go.Figure:
+def price_volume_chart(data, sessions: int, currency: str) -> go.Figure:
     """创建带成交量与均线的交互式 K 线图。"""
     view = data.tail(sessions)
     figure = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.75, 0.25])
@@ -32,7 +39,7 @@ def price_volume_chart(data, sessions: int) -> go.Figure:
     colors = ["#2ca02c" if close >= opened else "#d62728" for close, opened in zip(view["Close"], view["Open"])]
     figure.add_trace(go.Bar(x=view.index, y=view["Volume"], name="成交量", marker_color=colors), row=2, col=1)
     figure.update_layout(height=650, xaxis_rangeslider_visible=False, hovermode="x unified", margin={"t": 25})
-    figure.update_yaxes(title_text="价格", row=1, col=1)
+    figure.update_yaxes(title_text=f"价格（{currency}）", row=1, col=1)
     figure.update_yaxes(title_text="成交量", row=2, col=1)
     return figure
 
@@ -70,18 +77,6 @@ def numeric(value):
     except (TypeError, ValueError):
         return None
     return result if math.isfinite(result) else None
-
-
-def format_number(value, currency: bool = False) -> str:
-    """以易读单位显示大数字，缺失时显示 N/A。"""
-    number = numeric(value)
-    if number is None:
-        return "N/A"
-    prefix = "$" if currency else ""
-    for divisor, suffix in ((1_000_000_000_000, "T"), (1_000_000_000, "B"), (1_000_000, "M")):
-        if abs(number) >= divisor:
-            return f"{prefix}{number / divisor:,.2f}{suffix}"
-    return f"{prefix}{number:,.2f}"
 
 
 def format_ratio(value, suffix: str = "") -> str:
@@ -130,27 +125,32 @@ TECHNICAL_LABELS = {
 }
 
 
-st.set_page_config(page_title="股票分析 V3", page_icon="📈", layout="wide")
+st.set_page_config(page_title="股票分析 V4.1", page_icon="📈", layout="wide")
 st.title("个人股票分析")
 st.caption("使用免费公开市场数据，分别展示技术面与基本面分析；无需 API Key。")
 
-ticker_column, range_column = st.columns([3, 1])
+market_column, ticker_column, range_column = st.columns([1, 2, 1])
+with market_column:
+    selected_market = st.selectbox("市场", SUPPORTED_MARKETS, index=0)
 with ticker_column:
-    ticker = st.text_input("股票代码", value="AAPL", placeholder="例如 AAPL").strip().upper()
+    user_symbol = st.text_input("股票代码", value="AAPL", placeholder="美股 AAPL / A股 600519 / 港股 700").strip()
 with range_column:
     chart_period = st.selectbox("图表区间", ("3 个月", "6 个月", "1 年"), index=1)
 sessions = {"3 个月": 63, "6 个月": 126, "1 年": 252}[chart_period]
 
-if not ticker:
-    st.info("请输入股票代码。")
+try:
+    market_symbol = normalize_symbol(selected_market, user_symbol)
+except SymbolValidationError as error:
+    st.error(str(error))
     st.stop()
+ticker = market_symbol.yahoo_symbol
 
 try:
     with st.spinner(f"正在加载 {ticker} 的市场数据..."):
         history = fetch_stock_data(ticker)
         summary = summarize_stock(history)
 except ValueError as error:
-    st.error(str(error))
+    st.error("未找到该证券的数据，请检查市场和代码是否正确。")
     st.stop()
 except Exception:
     st.error("暂时无法加载市场数据，请检查网络或股票代码后重试。")
@@ -167,9 +167,11 @@ except ValueError as error:
 except Exception:
     fundamental_error = "基本面分析暂时无法完成，请稍后重试。"
 
-technical_details = technical_explanations(summary, history)
+provider_currency = fundamentals.metrics.get("currency") if fundamentals else None
+currency = reliable_currency(provider_currency, market_symbol.default_currency)
+technical_details = technical_explanations(summary, history, currency)
 technical_strengths, technical_risks = rank_factors(technical_details)
-fundamental_details = fundamental_explanations(fundamentals) if fundamentals else ()
+fundamental_details = fundamental_explanations(fundamentals, currency) if fundamentals else ()
 fundamental_strengths, fundamental_risks = rank_factors(fundamental_details)
 fundamental_score = fundamentals.score if fundamentals else None
 fundamental_label = fundamentals.score_label if fundamentals else "数据不足"
@@ -185,12 +187,16 @@ narrative = build_narrative(
 )
 
 st.header("股票概览")
+st.caption(
+    f"市场：{market_symbol.market} ｜ 输入代码：{market_symbol.user_symbol} ｜ "
+    f"数据代码：{market_symbol.yahoo_symbol} ｜ 币种：{currency}"
+)
 overview_columns = st.columns(6)
-overview_columns[0].metric("当前价格", f"${summary.current_price:,.2f}")
-overview_columns[1].metric("日涨跌", f"${summary.price_change:+,.2f}", f"{summary.price_change_percent:+.2f}%")
-overview_columns[2].metric("MA20", f"${summary.ma20:,.2f}")
-overview_columns[3].metric("MA50", f"${summary.ma50:,.2f}")
-overview_columns[4].metric("MA200", f"${summary.ma200:,.2f}" if summary.ma200 is not None else "N/A")
+overview_columns[0].metric("当前价格", format_money(summary.current_price, currency))
+overview_columns[1].metric("日涨跌", format_money(summary.price_change, currency), f"{summary.price_change_percent:+.2f}%")
+overview_columns[2].metric("MA20", format_money(summary.ma20, currency))
+overview_columns[3].metric("MA50", format_money(summary.ma50, currency))
+overview_columns[4].metric("MA200", format_money(summary.ma200, currency))
 overview_columns[5].metric("近期成交量", f"{summary.volume:,.0f}")
 
 st.subheader("技术面 / 基本面对比")
@@ -214,14 +220,14 @@ summary_columns = st.columns(5)
 summary_columns[0].metric("整体趋势", TECHNICAL_LABELS.get(summary.trend, summary.trend))
 summary_columns[1].metric("技术评分", f"{summary.technical_score}/100", TECHNICAL_LABELS.get(summary.score_label, summary.score_label))
 summary_columns[2].metric("动能", summary.momentum.replace("Bullish", "看多").replace("Bearish", "看空").replace("Neutral/mixed", "中性/混合").replace(" MACD momentum", ""))
-summary_columns[3].metric("最近支撑", f"${summary.support:,.2f}")
-summary_columns[4].metric("最近阻力", f"${summary.resistance:,.2f}")
+summary_columns[3].metric("最近支撑", format_money(summary.support, currency))
+summary_columns[4].metric("最近阻力", format_money(summary.resistance, currency))
 factor_columns = st.columns(2)
 factor_columns[0].success(f"主要看多因素 — {summary.main_bullish_factor}")
 factor_columns[1].warning(f"主要风险因素 — {summary.main_risk_factor}")
 
 st.header("价格与成交量")
-st.plotly_chart(price_volume_chart(history, sessions), use_container_width=True)
+st.plotly_chart(price_volume_chart(history, sessions, currency), use_container_width=True)
 volume_columns = st.columns(3)
 volume_columns[0].metric("最新成交量", f"{summary.volume:,.0f}")
 volume_columns[1].metric("20 日平均成交量", f"{summary.average_volume:,.0f}")
@@ -232,11 +238,11 @@ st.header("趋势 / 移动平均线")
 st.write(f"**均线排列：** {summary.ma_alignment}")
 st.write(f"**价格结构：** {summary.price_structure}")
 structure_columns = st.columns(4)
-structure_columns[0].metric("近 20 日高点", f"${summary.recent_high:,.2f}")
-structure_columns[1].metric("近 20 日低点", f"${summary.recent_low:,.2f}")
+structure_columns[0].metric("近 20 日高点", format_money(summary.recent_high, currency))
+structure_columns[1].metric("近 20 日低点", format_money(summary.recent_low, currency))
 if summary.high_52_week is not None and summary.low_52_week is not None:
-    structure_columns[2].metric("52 周高点", f"${summary.high_52_week:,.2f}", f"距高点 {summary.distance_from_high:.2f}%")
-    structure_columns[3].metric("52 周低点", f"${summary.low_52_week:,.2f}", f"较低点 {summary.distance_from_low:+.2f}%")
+    structure_columns[2].metric("52 周高点", format_money(summary.high_52_week, currency), f"距高点 {summary.distance_from_high:.2f}%")
+    structure_columns[3].metric("52 周低点", format_money(summary.low_52_week, currency), f"较低点 {summary.distance_from_low:+.2f}%")
 else:
     structure_columns[2].metric("52 周高点", "N/A")
     structure_columns[3].metric("52 周低点", "N/A")
@@ -256,8 +262,8 @@ with chart_columns[1]:
 
 st.header("支撑与阻力")
 level_columns = st.columns(2)
-level_columns[0].metric("附近支撑", f"${summary.support:,.2f}")
-level_columns[1].metric("附近阻力", f"${summary.resistance:,.2f}")
+level_columns[0].metric("附近支撑", format_money(summary.support, currency))
+level_columns[1].metric("附近阻力", format_money(summary.resistance, currency))
 st.caption("根据约 90 个交易日内的五日枢轴高低点估算；找不到附近枢轴时使用近期区间。参考位并非保证。")
 
 st.header("技术评分明细")
@@ -278,10 +284,13 @@ else:
     show_metrics(
         (
             ("公司名称", fundamentals.company_name),
-            ("股票代码", ticker),
+            ("市场", market_symbol.market),
+            ("输入代码", market_symbol.user_symbol),
+            ("数据代码", market_symbol.yahoo_symbol),
+            ("币种", currency),
             ("板块", fundamentals.sector or "N/A"),
             ("行业", fundamentals.industry or "N/A"),
-            ("市值", format_number(fundamentals.metrics.get("marketCap"), currency=True)),
+            ("市值", format_money(fundamentals.metrics.get("marketCap"), currency, compact=True)),
             ("国家/地区", fundamentals.country or "N/A"),
         ),
         columns=3,
@@ -301,6 +310,8 @@ else:
     factor_columns[0].success(f"主要正面因素 — {fundamentals.main_positive_factor}")
     factor_columns[1].warning(f"主要风险因素 — {fundamentals.main_risk_factor}")
     st.info(f"数据覆盖率约 {fundamentals.coverage_percent}% 。缺失指标不按零分处理，而是从适用权重中排除。")
+    if market_symbol.market != "美股" and fundamentals.coverage_percent < 70:
+        st.warning(f"{market_symbol.market} 在 Yahoo Finance 的基本面字段覆盖较有限；当前评分仅基于已提供的数据。")
 
     st.subheader("估值")
     show_metrics(
@@ -310,7 +321,7 @@ else:
             ("市销率（P/S）", format_ratio(fundamentals.metrics.get("priceToSalesTrailing12Months"))),
             ("市净率（P/B）", format_ratio(fundamentals.metrics.get("priceToBook"))),
             ("PEG（市盈增长比）", format_ratio(fundamentals.metrics.get("pegRatio"))),
-            ("企业价值（EV）", format_number(fundamentals.metrics.get("enterpriseValue"), currency=True)),
+            ("企业价值（EV）", format_money(fundamentals.metrics.get("enterpriseValue"), currency, compact=True)),
             ("EV/EBITDA", format_ratio(fundamentals.metrics.get("enterpriseToEbitda"))),
         )
     )
@@ -341,13 +352,13 @@ else:
     st.subheader("财务健康与现金流")
     show_metrics(
         (
-            ("现金总额", format_number(fundamentals.metrics.get("totalCash"), currency=True)),
-            ("债务总额", format_number(fundamentals.metrics.get("totalDebt"), currency=True)),
+            ("现金总额", format_money(fundamentals.metrics.get("totalCash"), currency, compact=True)),
+            ("债务总额", format_money(fundamentals.metrics.get("totalDebt"), currency, compact=True)),
             ("负债权益比", format_ratio(fundamentals.metrics.get("debtToEquity"))),
             ("流动比率", format_ratio(fundamentals.metrics.get("currentRatio"))),
             ("速动比率", format_ratio(fundamentals.metrics.get("quickRatio"))),
-            ("自由现金流", format_number(fundamentals.metrics.get("freeCashflow"), currency=True)),
-            ("经营现金流", format_number(fundamentals.metrics.get("operatingCashflow"), currency=True)),
+            ("自由现金流", format_money(fundamentals.metrics.get("freeCashflow"), currency, compact=True)),
+            ("经营现金流", format_money(fundamentals.metrics.get("operatingCashflow"), currency, compact=True)),
         )
     )
 
@@ -356,7 +367,7 @@ else:
         show_metrics(
             (
                 ("股息率", format_percent(fundamentals.metrics.get("dividendYield"))),
-                ("年度股息", format_number(fundamentals.metrics.get("dividendRate"), currency=True)),
+                ("年度股息", format_money(fundamentals.metrics.get("dividendRate"), currency)),
                 ("派息率", format_percent(fundamentals.metrics.get("payoutRatio"))),
                 ("除息日", format_date(fundamentals.metrics.get("exDividendDate"))),
             )
@@ -367,10 +378,10 @@ else:
     st.subheader("52 周价格背景")
     show_metrics(
         (
-            ("当前价格", f"${summary.current_price:,.2f}"),
-            ("52 周高点", f"${summary.high_52_week:,.2f}" if summary.high_52_week is not None else "N/A"),
+            ("当前价格", format_money(summary.current_price, currency)),
+            ("52 周高点", format_money(summary.high_52_week, currency)),
             ("距 52 周高点", f"{summary.distance_from_high:.2f}%" if summary.distance_from_high is not None else "N/A"),
-            ("52 周低点", f"${summary.low_52_week:,.2f}" if summary.low_52_week is not None else "N/A"),
+            ("52 周低点", format_money(summary.low_52_week, currency)),
             ("较 52 周低点", f"{summary.distance_from_low:+.2f}%" if summary.distance_from_low is not None else "N/A"),
         )
     )

@@ -7,6 +7,7 @@ import pandas as pd
 
 from stock_analysis.analysis import StockSummary
 from stock_analysis.fundamentals import FundamentalSummary
+from stock_analysis.markets import format_money
 
 
 @dataclass(frozen=True)
@@ -66,21 +67,16 @@ def _ratio(value: object) -> str | None:
     return None if number is None else f"{number:,.2f}"
 
 
-def _money(value: object) -> str | None:
+def _money(value: object, currency: str) -> str | None:
     number = _number(value)
-    if number is None:
-        return None
-    for divisor, suffix in ((1_000_000_000_000, "T"), (1_000_000_000, "B"), (1_000_000, "M")):
-        if abs(number) >= divisor:
-            return f"{number / divisor:,.2f}{suffix}"
-    return f"{number:,.2f}"
+    return None if number is None else format_money(number, currency, compact=True)
 
 
 def _available_metric(label: str, value: str | None) -> str | None:
     return None if value is None else f"{label}：{value}"
 
 
-def technical_explanations(summary: StockSummary, data: pd.DataFrame) -> tuple[ScoreExplanation, ...]:
+def technical_explanations(summary: StockSummary, data: pd.DataFrame, currency: str = "USD") -> tuple[ScoreExplanation, ...]:
     """Explain the existing technical components without changing their points."""
     components = {component.name: component for component in summary.score_components}
     latest = data.iloc[-1]
@@ -90,9 +86,9 @@ def technical_explanations(summary: StockSummary, data: pd.DataFrame) -> tuple[S
         "Trend": (
             "趋势",
             (
-                f"当前价格：${summary.current_price:,.2f}",
-                f"MA50：${summary.ma50:,.2f}",
-                f"5 个交易日前 MA50：${ma50_previous:,.2f}",
+                f"当前价格：{format_money(summary.current_price, currency)}",
+                f"MA50：{format_money(summary.ma50, currency)}",
+                f"5 个交易日前 MA50：{format_money(ma50_previous, currency)}",
             ),
             f"价格位于 MA50 {'上方' if summary.current_price > summary.ma50 else '下方'}，MA50 近 5 个交易日{'上升' if summary.ma50 > ma50_previous else '下降'}；现有规则分别据此计分。",
         ),
@@ -101,10 +97,10 @@ def technical_explanations(summary: StockSummary, data: pd.DataFrame) -> tuple[S
             tuple(
                 item
                 for item in (
-                    f"当前价格：${summary.current_price:,.2f}",
-                    f"MA20：${summary.ma20:,.2f}",
-                    f"MA50：${summary.ma50:,.2f}",
-                    f"MA200：${summary.ma200:,.2f}" if summary.ma200 is not None else None,
+                    f"当前价格：{format_money(summary.current_price, currency)}",
+                    f"MA20：{format_money(summary.ma20, currency)}",
+                    f"MA50：{format_money(summary.ma50, currency)}",
+                    f"MA200：{format_money(summary.ma200, currency)}" if summary.ma200 is not None else None,
                 )
                 if item is not None
             ),
@@ -126,7 +122,7 @@ def technical_explanations(summary: StockSummary, data: pd.DataFrame) -> tuple[S
         ),
         "Price structure": (
             "价格结构",
-            (f"近 20 日高点：${summary.recent_high:,.2f}", f"近 20 日低点：${summary.recent_low:,.2f}"),
+            (f"近 20 日高点：{format_money(summary.recent_high, currency)}", f"近 20 日低点：{format_money(summary.recent_low, currency)}"),
             f"最近两个 20 交易日区间被识别为“{summary.price_structure}”，现有价格结构分数据此产生。",
         ),
         "Volume": (
@@ -144,7 +140,7 @@ def technical_explanations(summary: StockSummary, data: pd.DataFrame) -> tuple[S
     return tuple(explanations)
 
 
-def fundamental_explanations(summary: FundamentalSummary) -> tuple[ScoreExplanation, ...]:
+def fundamental_explanations(summary: FundamentalSummary, currency: str = "USD") -> tuple[ScoreExplanation, ...]:
     """Explain existing fundamental categories using only available Yahoo fields."""
     info = summary.metrics
     metric_specs = {
@@ -174,12 +170,12 @@ def fundamental_explanations(summary: FundamentalSummary) -> tuple[ScoreExplanat
             ("负债权益比", "debtToEquity", _ratio),
             ("流动比率", "currentRatio", _ratio),
             ("速动比率", "quickRatio", _ratio),
-            ("现金总额", "totalCash", _money),
-            ("债务总额", "totalDebt", _money),
+            ("现金总额", "totalCash", lambda value: _money(value, currency)),
+            ("债务总额", "totalDebt", lambda value: _money(value, currency)),
         ),
         "现金流": (
-            ("自由现金流", "freeCashflow", _money),
-            ("经营现金流", "operatingCashflow", _money),
+            ("自由现金流", "freeCashflow", lambda value: _money(value, currency)),
+            ("经营现金流", "operatingCashflow", lambda value: _money(value, currency)),
         ),
         "股东回报/股息": (
             ("股息率", "dividendYield", _percent),
