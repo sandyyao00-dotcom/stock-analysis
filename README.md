@@ -1,4 +1,4 @@
-# Stock Analysis V5
+# Stock Analysis V5.1
 
 一个适合个人研究、对初学者友好的本地股票分析应用。界面使用 Streamlit，行情与公司资料通过免费的 `yfinance` 读取 Yahoo Finance 公开数据。无需 API Key、付费数据源或券商账户。
 
@@ -66,6 +66,14 @@
 - 新闻缓存 20 分钟；新闻失败不会阻止技术面和基本面加载
 - V5 不创建新闻评分，也不把新闻加入技术或基本面评分
 
+### 新闻规则增强（V5.1）
+
+- 每篇新闻归入一个主类别：财报/业绩、产品/新品、分析师评级、并购/投资、监管/诉讼、管理层、AI/技术、宏观/行业、股东回报或其他
+- 优先匹配明确短语，例如 `price target raised`、`cuts guidance`、`lawsuit dismissed`
+- 同时出现有意义的正面与负面证据时标为“中性/等待确认”
+- 为每篇新闻生成简短中文规则解释，不调用翻译或 AI 服务
+- 近期催化剂与风险只选取真实的潜在利好/利空标题，按时间排序并最多显示 3 条
+
 ## 项目结构
 
 ```text
@@ -92,16 +100,18 @@ stock-analysis/
 
 ## 新闻方法与限制
 
-新闻标题保持数据源原文，不使用 AI 自动翻译。分类按关键词确定性匹配，例如：
+新闻标题保持数据源原文，不使用 AI 自动翻译。分类采用明确优先级：监管/诉讼 → 分析师评级 → 财报/业绩 → 股东回报 → 并购/投资 → 管理层 → 产品/新品 → AI/技术 → 宏观/行业 → 其他。较具体的事件优先于宽泛行业词。
+
+部分规则示例：
 
 - `earnings`、`revenue`、`profit`、`EPS` → 财报 / 业绩
-- `guidance`、`outlook`、`forecast` → 业绩指引
-- `dividend`、`buyback`、`repurchase` → 股息 / 回购
+- `guidance`、`outlook`、`forecast` → 财报/业绩
+- `dividend`、`buyback`、`repurchase` → 股东回报
 - `upgrade`、`downgrade`、`price target` → 分析师评级
-- `lawsuit`、`investigation`、`regulator`、`antitrust` → 监管 / 法律
-- `acquisition`、`acquire`、`merger` → 并购 / 投资
+- `lawsuit`、`investigation`、`regulator`、`antitrust` → 监管/诉讼
+- `acquisition`、`acquire`、`merger` → 并购/投资
 
-利好/利空标签描述标题所呈现事件的表面性质，不表示未来价格方向。含义不明确或同时出现正负关键词时优先标为“中性/待确认”。Yahoo 对 A 股和港股的新闻数量可能明显少于美股；没有新闻不代表中性情绪，也不影响任何评分。
+利好/利空标签描述标题所呈现事件的表面性质，不表示未来价格方向。含义不明确或同时出现正负关键词时标为“中性/等待确认”。例如 `lawsuit dismissed` 不会仅因包含 `lawsuit` 自动判为利空。Yahoo 对 A 股和港股的新闻数量可能明显少于美股；没有新闻不代表中性情绪，也不影响任何评分。
 
 ## 支持市场与代码规范化
 

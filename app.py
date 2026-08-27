@@ -482,6 +482,7 @@ else:
         with st.container(border=True):
             st.markdown(f"**[{article.category}] [{article.event_label}]**")
             st.write(article.title)
+            st.write(article.explanation)
             published_text = article.published_at.strftime("%Y-%m-%d %H:%M UTC") if article.published_at else "发布时间未知"
             st.caption(
                 f"来源：{article.publisher or 'N/A'} ｜ {published_text} ｜ "
