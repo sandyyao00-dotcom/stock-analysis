@@ -18,6 +18,7 @@ from stock_analysis.explanations import (
     technical_explanations,
 )
 from stock_analysis.fundamentals import analyze_fundamentals, fetch_company_info
+from stock_analysis.hotspot_ui import render_market_hotspots_panel
 from stock_analysis.markets import (
     MARKET_A_SHARE,
     SUPPORTED_MARKETS,
@@ -145,6 +146,7 @@ st.set_page_config(page_title="股票分析 V4.1", page_icon="📈", layout="wid
 apply_app_theme()
 st.title("个人股票分析")
 st.caption("使用免费公开市场数据，分别展示技术面与基本面分析；无需 API 密钥。")
+render_market_hotspots_panel()
 
 market_column, ticker_column, range_column = st.columns([1, 2, 1])
 with market_column:
