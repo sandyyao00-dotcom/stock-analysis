@@ -107,6 +107,14 @@ p, li, label, .stMarkdown, [data-testid="stWidgetLabel"] {
     min-height: 5.5rem;
 }
 
+.st-key-sina-secondary-quote [data-testid="stMetric"] {
+    min-height: 4.7rem;
+    padding: 0.55rem 0.7rem;
+}
+.st-key-sina-secondary-quote [data-testid="stMetricValue"] {
+    font-size: clamp(1.05rem, 1.35vw, 1.3rem) !important;
+}
+
 .st-key-technical-summary [data-testid="stMetricValue"] {
     font-size: clamp(1.25rem, 1.55vw, 1.5rem) !important;
 }

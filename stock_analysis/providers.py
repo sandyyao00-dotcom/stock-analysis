@@ -38,6 +38,12 @@ class RealtimeSnapshot:
     warnings: tuple[str, ...] = ()
     input_errors: tuple[str, ...] = ()
     parser_diagnostics: tuple["ParserDiagnostic", ...] = ()
+    available: bool = True
+    loading: bool = False
+    stale: bool = False
+    error: str | None = None
+    fetched_at: datetime | None = None
+    timestamp_is_fetch_time: bool = False
 
 
 @dataclass(frozen=True)

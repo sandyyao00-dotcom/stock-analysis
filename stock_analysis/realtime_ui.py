@@ -1,12 +1,19 @@
 """Streamlit UI for reviewed, session-only A-share realtime snapshots."""
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from math import isclose
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-from stock_analysis.markets import MarketSymbol, format_money
+from stock_analysis.a_share_sessions import (
+    BEIJING_TIMEZONE,
+    PHASE_MESSAGES,
+    SINA_PRIORITY_PHASES,
+    get_a_share_market_phase,
+)
+from stock_analysis.markets import MARKET_A_SHARE, MarketSymbol, format_money
 from stock_analysis.ocr import extract_screenshot_text, ocr_status
 from stock_analysis.providers import (
     REALTIME_PRICE_DIFFERENCE_WARNING_PCT,
@@ -20,10 +27,173 @@ from stock_analysis.providers import (
     snapshot_from_values,
     validate_snapshot,
 )
+from stock_analysis.sina_realtime import get_sina_a_share_snapshot
 
 
 SOURCE_OPTIONS = ("招商证券", "同花顺", "通达信", "东方财富", "其他")
 METHOD_LABELS = {"manual": "手动输入", "pasted_text": "粘贴文字", "screenshot": "截图识别"}
+VANCOUVER_TIMEZONE = ZoneInfo("America/Vancouver")
+
+
+@dataclass(frozen=True)
+class SinaDisplayState:
+    """Human-readable UI state without exposing provider implementation flags."""
+
+    state: str
+    message: str
+    cache_label: str | None = None
+    fetched_at_label: str | None = None
+
+
+def sina_enabled_for_market(market: str) -> bool:
+    return market == MARKET_A_SHARE
+
+
+def _friendly_sina_error(error: str | None) -> str:
+    if not error:
+        return "新浪自动行情暂时不可用。"
+    lowered = error.lower()
+    if "timeout" in lowered or "timed out" in lowered:
+        return "新浪自动行情请求超时，请稍后再检查。"
+    if "connection" in lowered or "network" in lowered:
+        return "新浪自动行情网络连接失败，请稍后再检查。"
+    if "does not contain" in lowered or "stock code" in lowered:
+        return "新浪行情中暂未找到这只股票。"
+    return "新浪自动行情暂时不可用，请稍后再检查。"
+
+
+def format_sina_fetch_time(fetched_at: datetime | None) -> str | None:
+    """Format one aware instant in Vancouver and Beijing without guessing naive time."""
+    if fetched_at is None or fetched_at.tzinfo is None or fetched_at.utcoffset() is None:
+        return None
+    vancouver = fetched_at.astimezone(VANCOUVER_TIMEZONE)
+    beijing = fetched_at.astimezone(BEIJING_TIMEZONE)
+    date_delta = (beijing.date() - vancouver.date()).days
+    if date_delta == 1:
+        date_suffix = "（次日）"
+    elif date_delta == -1:
+        date_suffix = "（前日）"
+    elif date_delta:
+        date_suffix = f"（相差{date_delta:+d}日）"
+    else:
+        date_suffix = ""
+    return (
+        f"温哥华 {vancouver.strftime('%H:%M:%S')}｜"
+        f"北京 {beijing.strftime('%H:%M:%S')}{date_suffix}"
+    )
+
+
+def build_sina_display_state(
+    snapshot: RealtimeSnapshot, *, prefers_sina: bool = True
+) -> SinaDisplayState:
+    """Convert provider state to short Chinese UI copy."""
+    fetched_at_label = format_sina_fetch_time(snapshot.fetched_at)
+    if not prefers_sina:
+        if snapshot.available:
+            return SinaDisplayState(
+                "cached",
+                "最近新浪缓存，仅供辅助参考；当前优先使用 Yahoo 行情。",
+                "辅助缓存",
+                fetched_at_label,
+            )
+        return SinaDisplayState("yahoo", "当前使用 Yahoo / yfinance 历史参考行情。")
+    if snapshot.available:
+        if snapshot.stale:
+            message = "缓存数据，可能不是最新行情"
+            if snapshot.loading:
+                message += "；后台正在更新"
+            return SinaDisplayState("stale", message, "缓存已过期", fetched_at_label)
+        return SinaDisplayState("available", "自动行情已加载。", "缓存有效", fetched_at_label)
+    if snapshot.loading:
+        return SinaDisplayState(
+            "loading",
+            "新浪行情正在后台加载，当前先显示 Yahoo 参考行情。你也可以使用下方手动实时行情。",
+        )
+    return SinaDisplayState(
+        "unavailable",
+        f"新浪实时行情暂时不可用，当前使用 Yahoo 行情。{_friendly_sina_error(snapshot.error)} "
+        "你仍可以使用下方手动行情。",
+    )
+
+
+def _format_quantity(value: float | None, *, missing: str = "—") -> str:
+    if value is None:
+        return missing
+    if abs(value) >= 100_000_000:
+        return f"{value / 100_000_000:,.2f} 亿"
+    if abs(value) >= 10_000:
+        return f"{value / 10_000:,.2f} 万"
+    return f"{value:,.0f}"
+
+
+def sina_display_fields(snapshot: RealtimeSnapshot, currency: str) -> tuple[tuple[str, str], ...]:
+    """Format automatic quote fields without feeding them into analysis."""
+    return (
+        ("股票名称", snapshot.company_name or snapshot.ticker),
+        ("最新价", format_money(snapshot.current_price, currency)),
+        ("涨跌幅", f"{snapshot.change_percent:+.2f}%" if snapshot.change_percent is not None else "N/A"),
+        ("今开", format_money(snapshot.open, currency)),
+        ("最高", format_money(snapshot.high, currency)),
+        ("最低", format_money(snapshot.low, currency)),
+        ("昨收", format_money(snapshot.previous_close, currency)),
+        ("成交量", _format_quantity(snapshot.volume)),
+        ("成交额", _format_quantity(snapshot.turnover_amount)),
+    )
+
+
+def _load_sina_snapshot(
+    market_symbol: MarketSymbol, *, allow_background_refresh: bool
+) -> RealtimeSnapshot | None:
+    if not sina_enabled_for_market(market_symbol.market):
+        return None
+    return get_sina_a_share_snapshot(
+        market_symbol.yahoo_symbol,
+        allow_background_refresh=allow_background_refresh,
+    )
+
+
+def _render_sina_automatic_quote(
+    market_symbol: MarketSymbol, currency: str, *, now: datetime | None = None
+) -> None:
+    if not sina_enabled_for_market(market_symbol.market):
+        return
+    phase = get_a_share_market_phase(now)
+    prefers_sina = phase in SINA_PRIORITY_PHASES
+    snapshot = _load_sina_snapshot(
+        market_symbol,
+        allow_background_refresh=prefers_sina,
+    )
+    if snapshot is None:
+        return
+    state = build_sina_display_state(snapshot, prefers_sina=prefers_sina)
+    with st.container(border=True):
+        st.write("**新浪实时行情**" if prefers_sina else "**自动实时行情**")
+        st.caption(PHASE_MESSAGES[phase])
+        if state.state == "loading":
+            st.info(state.message)
+        elif state.state == "unavailable":
+            st.warning(state.message)
+        elif state.state == "yahoo":
+            st.caption(state.message)
+        else:
+            if not prefers_sina:
+                st.write("**最近新浪缓存**")
+            fields = sina_display_fields(snapshot, currency)
+            columns = st.columns(3)
+            for column, (label, value) in zip(columns, fields[:3]):
+                column.metric(label, value)
+            with st.container(key="sina-secondary-quote"):
+                for start in range(3, len(fields), 3):
+                    columns = st.columns(3)
+                    for column, (label, value) in zip(columns, fields[start : start + 3]):
+                        column.metric(label, value)
+            if state.state in {"stale", "cached"}:
+                st.warning(state.message)
+            else:
+                st.caption(state.message)
+            fetched_text = state.fetched_at_label or "未提供"
+            st.caption(f"数据来源：新浪财经 ｜ 抓取时间：{fetched_text} ｜ {state.cache_label}")
+        st.button("检查自动行情", key=f"check-sina-{market_symbol.yahoo_symbol}")
 
 
 def _source_selector(key_prefix: str) -> str:
@@ -47,6 +217,10 @@ def _candidate_for(yahoo_symbol: str) -> RealtimeSnapshot | None:
 
 def _confirmed_for(yahoo_symbol: str) -> RealtimeSnapshot | None:
     snapshots = st.session_state.get("confirmed_realtime_snapshots", {})
+    return _confirmed_snapshot_from_store(snapshots, yahoo_symbol)
+
+
+def _confirmed_snapshot_from_store(snapshots: object, yahoo_symbol: str) -> RealtimeSnapshot | None:
     snapshot = snapshots.get(yahoo_symbol) if isinstance(snapshots, dict) else None
     return snapshot if isinstance(snapshot, RealtimeSnapshot) and snapshot.confirmed else None
 
@@ -252,6 +426,7 @@ def _render_confirmed_snapshot(
 def render_ashare_realtime_panel(market_symbol: MarketSymbol, currency: str, summary: object) -> RealtimeSnapshot | None:
     """Render all user input methods and return only a confirmed snapshot."""
     with st.expander("实时行情补充"):
+        _render_sina_automatic_quote(market_symbol, currency)
         st.write(
             "免费自动行情可能存在延迟。您可以从招商证券、同花顺、通达信、东方财富等行情软件"
             "手动输入、复制行情文字，或上传行情截图。所有识别结果都需要您确认后才会使用。"
