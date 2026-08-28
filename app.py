@@ -32,7 +32,7 @@ from stock_analysis.news import (
     LABEL_NEUTRAL,
     LABEL_POSITIVE,
     NewsResult,
-    fetch_news,
+    fetch_market_news,
     label_counts,
     recent_catalysts_and_risks,
     relative_age,
@@ -185,7 +185,7 @@ except Exception:
     fundamental_error = "基本面分析暂时无法完成，请稍后重试。"
 
 try:
-    news_result = fetch_news(ticker)
+    news_result = fetch_market_news(market_symbol)
 except Exception:
     news_result = NewsResult(0, (), "新闻数据暂时不可用，不影响技术面与基本面分析。")
 
@@ -469,7 +469,8 @@ else:
 
 st.divider()
 st.header("新闻与催化剂")
-st.caption("新闻数据来源：Yahoo Finance / yfinance")
+news_source_label = "东方财富" if news_result.source_provider == "eastmoney" else "Yahoo Finance / yfinance"
+st.caption(f"新闻数据来源：{news_source_label}")
 if news_result.error:
     st.warning(news_result.error)
 elif not news_result.articles:
@@ -506,13 +507,17 @@ else:
         with st.container(border=True):
             st.markdown(f"**[{article.category}] [{article.event_label}]**")
             st.write(article.title)
+            if article.summary_or_content:
+                summary = article.summary_or_content
+                st.write(summary if len(summary) <= 300 else f"{summary[:297]}...")
             st.write(article.explanation)
             published_text = article.published_at.strftime("%Y-%m-%d %H:%M（协调世界时）") if article.published_at else "发布时间未知"
             st.caption(
                 f"来源：{article.publisher or 'N/A'} ｜ {published_text} ｜ "
                 f"{relative_age(article.published_at)} ｜ {article.freshness}"
             )
-            st.link_button("查看原文", article.url, key=f"news-link-{index}")
+            if article.url:
+                st.link_button("查看原文", article.url, key=f"news-link-{index}")
 
 st.caption("新闻分类与利好/利空标签由本地规则生成，仅用于信息整理，不代表未来股价表现或投资建议。")
 

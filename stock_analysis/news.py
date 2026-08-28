@@ -8,6 +8,9 @@ from typing import Iterable
 import streamlit as st
 import yfinance as yf
 
+from stock_analysis.eastmoney_news import StandardNewsItem, get_eastmoney_news
+from stock_analysis.markets import MARKET_A_SHARE, MarketSymbol
+
 
 LABEL_POSITIVE = "潜在利好"
 LABEL_NEGATIVE = "潜在利空"
@@ -22,13 +25,15 @@ class NewsArticle:
     publisher: str | None
     published_at: datetime | None
     publication_timestamp: int | None
-    url: str
+    url: str | None
     article_type: str | None
     related_tickers: tuple[str, ...]
     category: str
     event_label: str
     explanation: str
     freshness: str
+    summary_or_content: str | None = None
+    source_provider: str = "yahoo"
 
 
 @dataclass(frozen=True)
@@ -38,6 +43,7 @@ class NewsResult:
     raw_item_count: int
     articles: tuple[NewsArticle, ...]
     error: str | None = None
+    source_provider: str = "yahoo"
 
 
 CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -340,6 +346,8 @@ def normalize_news_item(item: object, now: datetime | None = None) -> NewsArticl
         event_label=event_label,
         explanation=build_news_explanation(category, event_label),
         freshness=freshness_label(published_at, now),
+        summary_or_content=None,
+        source_provider="yahoo",
     )
 
 
@@ -372,6 +380,68 @@ def fetch_news(yahoo_symbol: str, count: int = 15) -> NewsResult:
         return NewsResult(raw_count, articles)
     except Exception:
         return NewsResult(0, (), "新闻数据暂时不可用，不影响技术面与基本面分析。")
+
+
+def normalize_eastmoney_items(
+    items: tuple[StandardNewsItem, ...], *, now: datetime | None = None, limit: int = 10
+) -> tuple[NewsArticle, ...]:
+    """Apply the unchanged deterministic headline rules to standardized raw news."""
+    articles: list[NewsArticle] = []
+    for item in items:
+        if not item.title or item.published_at is None:
+            continue
+        clean_title = item.title.strip()
+        if not clean_title:
+            continue
+        category = classify_category(clean_title)
+        event_label = classify_event_label(clean_title)
+        articles.append(
+            NewsArticle(
+                title=clean_title,
+                publisher=item.source_name,
+                published_at=item.published_at,
+                publication_timestamp=int(item.published_at.timestamp()),
+                url=item.url,
+                article_type=None,
+                related_tickers=(item.symbol,),
+                category=category,
+                event_label=event_label,
+                explanation=build_news_explanation(category, event_label),
+                freshness=freshness_label(item.published_at, now),
+                summary_or_content=item.summary_or_content,
+                source_provider=item.source_provider,
+            )
+        )
+    articles.sort(key=lambda article: article.publication_timestamp or 0, reverse=True)
+    return tuple(articles[:limit])
+
+
+def fetch_market_news(
+    market_symbol: MarketSymbol,
+    count: int = 15,
+    *,
+    eastmoney_getter=None,
+    yahoo_fetcher=None,
+    now: datetime | None = None,
+) -> NewsResult:
+    """Route A-share news to EastMoney and retain Yahoo for every fallback/other market."""
+    yahoo_provider = yahoo_fetcher or fetch_news
+    if market_symbol.market != MARKET_A_SHARE:
+        return yahoo_provider(market_symbol.yahoo_symbol, count=count)
+
+    code = market_symbol.yahoo_symbol.split(".", 1)[0]
+    try:
+        eastmoney_result = (eastmoney_getter or get_eastmoney_news)(code, now=now)
+        articles = normalize_eastmoney_items(eastmoney_result.news, now=now)
+        if eastmoney_result.available and articles:
+            return NewsResult(
+                eastmoney_result.raw_item_count,
+                articles,
+                source_provider="eastmoney",
+            )
+    except Exception:
+        pass
+    return yahoo_provider(market_symbol.yahoo_symbol, count=count)
 
 
 def label_counts(articles: Iterable[NewsArticle]) -> dict[str, int]:
