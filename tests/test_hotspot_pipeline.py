@@ -10,7 +10,11 @@ from stock_analysis.hotspot_candidates import (
     HotspotCandidate,
     MatchedBoard,
 )
-from stock_analysis.hotspot_pipeline import run_hotspot_pipeline
+from stock_analysis.hotspot_pipeline import (
+    run_candidate_stage,
+    run_hotspot_pipeline,
+    run_hotspot_stage,
+)
 from stock_analysis.market_hotspots import (
     BOARD_TYPE_CONCEPT,
     BOARD_TYPE_INDUSTRY,
@@ -71,6 +75,50 @@ def successful_builder(inputs, *, max_candidates_per_board):
 
 
 class HotspotPipelineTests(unittest.TestCase):
+    def test_hotspot_stage_never_calls_candidate_builder(self):
+        scorer = Mock(wraps=__import__(
+            "stock_analysis.hotspot_scoring", fromlist=["score_hotspots"]
+        ).score_hotspots)
+        result = run_hotspot_stage(
+            industry_hotspot_fetcher=lambda: board("银行", BOARD_TYPE_INDUSTRY, 3),
+            concept_hotspot_fetcher=lambda: board("机器人", BOARD_TYPE_CONCEPT, 4),
+            scorer=scorer,
+        )
+        self.assertTrue(result.available)
+        scorer.assert_called_once()
+        self.assertFalse(hasattr(result, "candidates"))
+
+    def test_candidate_stage_uses_selected_hotspots_only(self):
+        hotspot_result = run_hotspot_stage(
+            industry_hotspot_fetcher=lambda: board("银行", BOARD_TYPE_INDUSTRY, 3),
+            concept_hotspot_fetcher=lambda: board("机器人", BOARD_TYPE_CONCEPT, 4),
+        )
+        builder = Mock(side_effect=successful_builder)
+        result = run_candidate_stage(hotspot_result, candidate_builder=builder)
+        self.assertTrue(result.available)
+        self.assertEqual(len(result.candidates), 2)
+        builder.assert_called_once()
+
+    def test_candidate_stage_is_not_run_for_unavailable_hotspots(self):
+        hotspot_result = run_hotspot_stage(
+            industry_hotspot_fetcher=lambda: unavailable(BOARD_TYPE_INDUSTRY, "failed"),
+            concept_hotspot_fetcher=lambda: unavailable(BOARD_TYPE_CONCEPT, "failed"),
+        )
+        builder = Mock()
+        result = run_candidate_stage(hotspot_result, candidate_builder=builder)
+        self.assertFalse(result.available)
+        builder.assert_not_called()
+
+    def test_one_sided_hotspot_stage_is_degraded_and_available(self):
+        result = run_hotspot_stage(
+            industry_hotspot_fetcher=lambda: unavailable(BOARD_TYPE_INDUSTRY, "failed"),
+            concept_hotspot_fetcher=lambda: board("机器人", BOARD_TYPE_CONCEPT, 4),
+        )
+        self.assertTrue(result.available)
+        self.assertTrue(result.degraded)
+        self.assertFalse(result.hotspots[BOARD_TYPE_INDUSTRY])
+        self.assertTrue(result.hotspots[BOARD_TYPE_CONCEPT])
+
     def test_normal_industry_and_concept_flow(self):
         result = run_hotspot_pipeline(
             industry_hotspot_fetcher=lambda: board("银行", BOARD_TYPE_INDUSTRY, 3),

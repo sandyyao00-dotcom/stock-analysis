@@ -9,12 +9,19 @@ from typing import Callable, MutableMapping
 
 import streamlit as st
 
-from stock_analysis.hotspot_pipeline import HotspotPipelineResult, run_hotspot_pipeline
+from stock_analysis.hotspot_pipeline import (
+    CandidateStageResult,
+    HotspotStageResult,
+    run_candidate_stage,
+    run_hotspot_stage,
+)
 from stock_analysis.market_hotspots import BOARD_TYPE_CONCEPT, BOARD_TYPE_INDUSTRY
 
 
-HOTSPOT_SESSION_KEY = "market_hotspot_pipeline_result"
+HOTSPOT_SESSION_KEY = "market_hotspot_stage_result"
+CANDIDATE_SESSION_KEY = "market_hotspot_candidate_result"
 HOTSPOT_REFRESH_ERROR_KEY = "market_hotspot_refresh_error"
+CANDIDATE_REFRESH_ERROR_KEY = "market_hotspot_candidate_refresh_error"
 
 
 @dataclass(frozen=True)
@@ -85,9 +92,11 @@ def sanitize_hotspot_error(value: object) -> str | None:
     return text[:157] + "..." if len(text) > 160 else text
 
 
-def prepare_hotspot_display(result: object) -> HotspotDisplayState:
+def prepare_hotspot_display(
+    hotspot_result: object, candidate_result: object | None = None
+) -> HotspotDisplayState:
     """Convert a pipeline result into safe, presentation-only values."""
-    raw_hotspots = getattr(result, "hotspots", {})
+    raw_hotspots = getattr(hotspot_result, "hotspots", {})
     if not isinstance(raw_hotspots, dict):
         raw_hotspots = {}
 
@@ -110,7 +119,8 @@ def prepare_hotspot_display(result: object) -> HotspotDisplayState:
         return tuple(prepared)
 
     prepared_candidates = []
-    for wrapped in (getattr(result, "candidates", ()) or ()):
+    candidate_source = candidate_result if candidate_result is not None else hotspot_result
+    for wrapped in (getattr(candidate_source, "candidates", ()) or ()):
         candidate = getattr(wrapped, "candidate", None)
         if candidate is None:
             continue
@@ -147,14 +157,20 @@ def prepare_hotspot_display(result: object) -> HotspotDisplayState:
             )
         )
 
+    raw_errors = tuple(getattr(hotspot_result, "errors", ()) or ()) + tuple(
+        getattr(candidate_result, "errors", ()) or ()
+    )
     errors = tuple(
         cleaned
-        for error in (getattr(result, "errors", ()) or ())
+        for error in raw_errors
         if (cleaned := sanitize_hotspot_error(error))
     )
     return HotspotDisplayState(
-        available=bool(getattr(result, "available", False)),
-        degraded=bool(getattr(result, "degraded", False)),
+        available=bool(getattr(hotspot_result, "available", False)),
+        degraded=(
+            bool(getattr(hotspot_result, "degraded", False))
+            or bool(getattr(candidate_result, "degraded", False))
+        ),
         industry=prepare_boards(BOARD_TYPE_INDUSTRY),
         concept=prepare_boards(BOARD_TYPE_CONCEPT),
         candidates=tuple(prepared_candidates),
@@ -166,16 +182,16 @@ def update_hotspot_session(
     state: MutableMapping[str, object],
     *,
     requested: bool,
-    pipeline_runner: Callable[[], HotspotPipelineResult] = run_hotspot_pipeline,
+    hotspot_runner: Callable[[], HotspotStageResult] = run_hotspot_stage,
 ) -> object | None:
-    """Run only on an explicit request, preserving a previous usable result on failure."""
+    """Refresh only hotspots, invalidating candidates only after success."""
     previous = state.get(HOTSPOT_SESSION_KEY)
     if not requested:
         return previous
     try:
-        current = pipeline_runner()
-        if not isinstance(current, HotspotPipelineResult):
-            raise TypeError("pipeline returned an invalid result")
+        current = hotspot_runner()
+        if not isinstance(current, HotspotStageResult):
+            raise TypeError("hotspot stage returned an invalid result")
     except Exception as exc:
         state[HOTSPOT_REFRESH_ERROR_KEY] = (
             "刷新失败，当前显示上一次结果。"
@@ -187,7 +203,41 @@ def update_hotspot_session(
         state[HOTSPOT_REFRESH_ERROR_KEY] = "刷新失败，当前显示上一次结果。"
         return previous
     state[HOTSPOT_SESSION_KEY] = current
+    state.pop(CANDIDATE_SESSION_KEY, None)
+    state.pop(CANDIDATE_REFRESH_ERROR_KEY, None)
     state.pop(HOTSPOT_REFRESH_ERROR_KEY, None)
+    return current
+
+
+def update_candidate_session(
+    state: MutableMapping[str, object],
+    *,
+    hotspot_result: object,
+    requested: bool,
+    candidate_runner: Callable[[HotspotStageResult], CandidateStageResult] = run_candidate_stage,
+) -> object | None:
+    """Refresh candidates only on request and never mutate the hotspot result."""
+    previous = state.get(CANDIDATE_SESSION_KEY)
+    if not requested:
+        return previous
+    if not isinstance(hotspot_result, HotspotStageResult) or not hotspot_result.available:
+        return previous
+    try:
+        current = candidate_runner(hotspot_result)
+        if not isinstance(current, CandidateStageResult):
+            raise TypeError("candidate stage returned an invalid result")
+    except Exception as exc:
+        state[CANDIDATE_REFRESH_ERROR_KEY] = (
+            "候选刷新失败，当前显示上一次结果。"
+            if bool(getattr(previous, "available", False))
+            else sanitize_hotspot_error(exc) or "热点候选股票暂时不可用"
+        )
+        return previous
+    if bool(getattr(previous, "available", False)) and not current.available:
+        state[CANDIDATE_REFRESH_ERROR_KEY] = "候选刷新失败，当前显示上一次结果。"
+        return previous
+    state[CANDIDATE_SESSION_KEY] = current
+    state.pop(CANDIDATE_REFRESH_ERROR_KEY, None)
     return current
 
 
@@ -228,7 +278,9 @@ def _render_candidates(items: tuple[CandidateDisplayItem, ...]) -> None:
 
 
 def render_market_hotspots_panel(
-    *, pipeline_runner: Callable[[], HotspotPipelineResult] = run_hotspot_pipeline
+    *,
+    hotspot_runner: Callable[[], HotspotStageResult] = run_hotspot_stage,
+    candidate_runner: Callable[[HotspotStageResult], CandidateStageResult] = run_candidate_stage,
 ) -> None:
     """Render a user-triggered, session-cached read-only hotspot panel."""
     st.header("市场热点")
@@ -238,7 +290,7 @@ def render_market_hotspots_panel(
     if requested:
         with st.spinner("正在获取市场热点…"):
             result = update_hotspot_session(
-                st.session_state, requested=True, pipeline_runner=pipeline_runner
+                st.session_state, requested=True, hotspot_runner=hotspot_runner
             )
     else:
         result = update_hotspot_session(st.session_state, requested=False)
@@ -250,10 +302,13 @@ def render_market_hotspots_panel(
         else:
             st.warning("市场热点暂时无法获取，请稍后重试。")
     if result is None:
-        st.caption("点击按钮后获取行业、概念热点及候选股票。")
+        st.caption("点击按钮后获取行业和概念热点。")
         return
 
-    view = prepare_hotspot_display(result)
+    candidate_result = update_candidate_session(
+        st.session_state, hotspot_result=result, requested=False
+    )
+    view = prepare_hotspot_display(result, candidate_result)
     if not view.available:
         st.info("暂未取得可用热点数据，请稍后再试。")
         return
@@ -266,9 +321,30 @@ def render_market_hotspots_panel(
     with concept_tab:
         _render_board_tab(view.concept)
 
+    has_candidates = CANDIDATE_SESSION_KEY in st.session_state
+    candidate_requested = st.button(
+        "刷新热点候选股票" if has_candidates else "获取热点候选股票"
+    )
+    if candidate_requested:
+        with st.spinner("正在获取热点候选股票…"):
+            candidate_result = update_candidate_session(
+                st.session_state,
+                hotspot_result=result,
+                requested=True,
+                candidate_runner=candidate_runner,
+            )
+        view = prepare_hotspot_display(result, candidate_result)
+
+    candidate_refresh_error = st.session_state.get(CANDIDATE_REFRESH_ERROR_KEY)
+    if candidate_refresh_error:
+        if candidate_refresh_error == "候选刷新失败，当前显示上一次结果。":
+            st.warning(candidate_refresh_error)
+        else:
+            st.warning("热点候选股票暂时无法获取，请稍后重试。")
+
     if view.candidates:
         _render_candidates(view.candidates)
-    else:
+    elif candidate_result is not None:
         st.info("热点板块已取得，但候选成分股暂时不可用。")
     if view.errors:
         with st.expander("查看数据状态"):

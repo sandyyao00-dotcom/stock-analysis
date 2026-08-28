@@ -7,15 +7,20 @@ from unittest.mock import Mock
 
 from stock_analysis.hotspot_candidates import HotspotCandidate, MatchedBoard
 from stock_analysis.hotspot_pipeline import (
+    CandidateStageResult,
     HotspotPipelineResult,
+    HotspotStageResult,
     MatchedHotspot,
     PipelineCandidate,
 )
 from stock_analysis.hotspot_ui import (
+    CANDIDATE_REFRESH_ERROR_KEY,
+    CANDIDATE_SESSION_KEY,
     HOTSPOT_REFRESH_ERROR_KEY,
     HOTSPOT_SESSION_KEY,
     prepare_hotspot_display,
     sanitize_hotspot_error,
+    update_candidate_session,
     update_hotspot_session,
 )
 from stock_analysis.market_hotspots import BOARD_TYPE_CONCEPT, BOARD_TYPE_INDUSTRY
@@ -61,6 +66,29 @@ def pipeline_result(*, available=True, degraded=False, candidates=None, errors=(
         },
         candidates=(candidate(),) if candidates is None else candidates,
         board_results=(), provider_results=(), errors=errors,
+    )
+
+
+def hotspot_stage_result(*, available=True, degraded=False, errors=()):
+    return HotspotStageResult(
+        available=available,
+        degraded=degraded,
+        hotspots={
+            BOARD_TYPE_INDUSTRY: (scored("电子", BOARD_TYPE_INDUSTRY),) if available else (),
+            BOARD_TYPE_CONCEPT: (scored(),) if available else (),
+        },
+        provider_results=(),
+        errors=errors,
+    )
+
+
+def candidate_stage_result(*, available=True, degraded=False, candidates=None, errors=()):
+    return CandidateStageResult(
+        available=available,
+        degraded=degraded,
+        candidates=(candidate(),) if candidates is None else candidates,
+        board_results=(),
+        errors=errors,
     )
 
 
@@ -146,38 +174,115 @@ class HotspotUITests(unittest.TestCase):
             self.assertNotIn(forbidden, text)
 
     def test_session_is_reused_without_request(self):
-        existing = pipeline_result()
+        existing = hotspot_stage_result()
         state = {HOTSPOT_SESSION_KEY: existing}
         runner = Mock()
-        self.assertIs(update_hotspot_session(state, requested=False, pipeline_runner=runner), existing)
+        self.assertIs(update_hotspot_session(state, requested=False, hotspot_runner=runner), existing)
         runner.assert_not_called()
 
     def test_explicit_request_stores_result(self):
-        current = pipeline_result()
+        current = hotspot_stage_result()
         state = {}
         runner = Mock(return_value=current)
-        self.assertIs(update_hotspot_session(state, requested=True, pipeline_runner=runner), current)
+        self.assertIs(update_hotspot_session(state, requested=True, hotspot_runner=runner), current)
         self.assertIs(state[HOTSPOT_SESSION_KEY], current)
         runner.assert_called_once_with()
 
     def test_refresh_exception_preserves_previous_result(self):
-        previous = pipeline_result()
-        state = {HOTSPOT_SESSION_KEY: previous}
+        previous = hotspot_stage_result()
+        old_candidate = candidate_stage_result()
+        state = {
+            HOTSPOT_SESSION_KEY: previous,
+            CANDIDATE_SESSION_KEY: old_candidate,
+        }
         returned = update_hotspot_session(
-            state, requested=True, pipeline_runner=Mock(side_effect=ConnectionError("blocked"))
+            state, requested=True, hotspot_runner=Mock(side_effect=ConnectionError("blocked"))
         )
         self.assertIs(returned, previous)
+        self.assertIs(state[CANDIDATE_SESSION_KEY], old_candidate)
         self.assertIn(HOTSPOT_REFRESH_ERROR_KEY, state)
         self.assertEqual(state[HOTSPOT_REFRESH_ERROR_KEY], "刷新失败，当前显示上一次结果。")
 
     def test_unavailable_refresh_preserves_previous_result(self):
-        previous = pipeline_result()
-        state = {HOTSPOT_SESSION_KEY: previous}
+        previous = hotspot_stage_result()
+        old_candidate = candidate_stage_result()
+        state = {
+            HOTSPOT_SESSION_KEY: previous,
+            CANDIDATE_SESSION_KEY: old_candidate,
+        }
         returned = update_hotspot_session(
-            state, requested=True, pipeline_runner=lambda: pipeline_result(available=False)
+            state, requested=True, hotspot_runner=lambda: hotspot_stage_result(available=False)
         )
         self.assertIs(returned, previous)
+        self.assertIs(state[CANDIDATE_SESSION_KEY], old_candidate)
         self.assertEqual(state[HOTSPOT_REFRESH_ERROR_KEY], "刷新失败，当前显示上一次结果。")
+
+    def test_successful_hotspot_refresh_invalidates_old_candidates(self):
+        state = {
+            HOTSPOT_SESSION_KEY: hotspot_stage_result(),
+            CANDIDATE_SESSION_KEY: candidate_stage_result(),
+            CANDIDATE_REFRESH_ERROR_KEY: "old error",
+        }
+        new_result = hotspot_stage_result(degraded=True)
+        update_hotspot_session(
+            state, requested=True, hotspot_runner=lambda: new_result
+        )
+        self.assertIs(state[HOTSPOT_SESSION_KEY], new_result)
+        self.assertNotIn(CANDIDATE_SESSION_KEY, state)
+        self.assertNotIn(CANDIDATE_REFRESH_ERROR_KEY, state)
+
+    def test_candidate_stage_runs_only_when_requested(self):
+        hotspot = hotspot_stage_result()
+        state = {HOTSPOT_SESSION_KEY: hotspot}
+        runner = Mock(return_value=candidate_stage_result())
+        self.assertIsNone(update_candidate_session(
+            state, hotspot_result=hotspot, requested=False, candidate_runner=runner
+        ))
+        runner.assert_not_called()
+        result = update_candidate_session(
+            state, hotspot_result=hotspot, requested=True, candidate_runner=runner
+        )
+        self.assertIs(state[CANDIDATE_SESSION_KEY], result)
+        runner.assert_called_once_with(hotspot)
+
+    def test_candidate_failure_does_not_change_hotspots(self):
+        hotspot = hotspot_stage_result()
+        state = {HOTSPOT_SESSION_KEY: hotspot}
+        result = update_candidate_session(
+            state,
+            hotspot_result=hotspot,
+            requested=True,
+            candidate_runner=Mock(side_effect=ConnectionError("blocked")),
+        )
+        self.assertIsNone(result)
+        self.assertIs(state[HOTSPOT_SESSION_KEY], hotspot)
+        self.assertIn(CANDIDATE_REFRESH_ERROR_KEY, state)
+
+    def test_candidate_refresh_does_not_refresh_hotspots(self):
+        hotspot = hotspot_stage_result()
+        previous_candidate = candidate_stage_result()
+        refreshed_candidate = candidate_stage_result(degraded=True)
+        state = {
+            HOTSPOT_SESSION_KEY: hotspot,
+            CANDIDATE_SESSION_KEY: previous_candidate,
+        }
+        update_candidate_session(
+            state,
+            hotspot_result=hotspot,
+            requested=True,
+            candidate_runner=lambda _: refreshed_candidate,
+        )
+        self.assertIs(state[HOTSPOT_SESSION_KEY], hotspot)
+        self.assertIs(state[CANDIDATE_SESSION_KEY], refreshed_candidate)
+
+    def test_display_combines_separate_stage_results(self):
+        view = prepare_hotspot_display(
+            hotspot_stage_result(degraded=True),
+            candidate_stage_result(degraded=True),
+        )
+        self.assertTrue(view.available)
+        self.assertTrue(view.degraded)
+        self.assertEqual(view.candidates[0].selection_reasons, candidate().candidate.selection_reasons)
 
 
 if __name__ == "__main__":

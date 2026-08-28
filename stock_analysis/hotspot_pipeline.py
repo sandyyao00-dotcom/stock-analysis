@@ -55,6 +55,24 @@ class HotspotPipelineResult:
     errors: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class HotspotStageResult:
+    available: bool
+    degraded: bool
+    hotspots: dict[str, tuple[ScoredHotspot, ...]]
+    provider_results: tuple[HotspotResult, ...]
+    errors: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CandidateStageResult:
+    available: bool
+    degraded: bool
+    candidates: tuple[PipelineCandidate, ...]
+    board_results: tuple[BoardCandidateResult, ...]
+    errors: tuple[str, ...]
+
+
 HotspotFetcher = Callable[[], HotspotResult]
 HotspotScorer = Callable[[Iterable[HotspotResult]], tuple[ScoredHotspot, ...]]
 TopSelector = Callable[..., dict[str, tuple[ScoredHotspot, ...]]]
@@ -148,32 +166,28 @@ def _candidate_associations(
     return tuple(associated)
 
 
-def _empty_result(
+def _empty_hotspot_stage(
     provider_results: tuple[HotspotResult, ...], errors: Iterable[str]
-) -> HotspotPipelineResult:
-    return HotspotPipelineResult(
+) -> HotspotStageResult:
+    return HotspotStageResult(
         available=False,
         degraded=True,
         hotspots={BOARD_TYPE_INDUSTRY: (), BOARD_TYPE_CONCEPT: ()},
-        candidates=(),
-        board_results=(),
         provider_results=provider_results,
         errors=tuple(dict.fromkeys(error for error in errors if error)),
     )
 
 
-def run_hotspot_pipeline(
+def run_hotspot_stage(
     *,
     industry_top_n: int = DEFAULT_TOP_HOTSPOTS_PER_TYPE,
     concept_top_n: int = DEFAULT_TOP_HOTSPOTS_PER_TYPE,
-    candidates_per_board: int = DEFAULT_CANDIDATES_PER_BOARD,
     industry_hotspot_fetcher: HotspotFetcher = get_industry_hotspots,
     concept_hotspot_fetcher: HotspotFetcher = get_concept_hotspots,
     scorer: HotspotScorer = score_hotspots,
     top_selector: TopSelector = select_top_hotspots,
-    candidate_builder: CandidateBuilder = build_hotspot_candidate_pool,
-) -> HotspotPipelineResult:
-    """Run provider, scoring, selection, and candidate stages with degradation."""
+) -> HotspotStageResult:
+    """Fetch, score, and select hotspots without requesting constituents."""
     provider_results = (
         _fetch_safely(BOARD_TYPE_INDUSTRY, industry_hotspot_fetcher),
         _fetch_safely(BOARD_TYPE_CONCEPT, concept_hotspot_fetcher),
@@ -205,12 +219,41 @@ def run_hotspot_pipeline(
             raise TypeError("top selector returned an unavailable hotspot")
     except Exception as exc:
         errors.append(f"hotspot scoring unavailable ({type(exc).__name__}: {exc})")
-        return _empty_result(provider_results, errors)
+        return _empty_hotspot_stage(provider_results, errors)
 
     if not selected_items:
-        return _empty_result(provider_results, errors)
+        return _empty_hotspot_stage(provider_results, errors)
+
+    degraded = bool(errors) or any(
+        not result.available or result.error for result in provider_results
+    )
+    return HotspotStageResult(
+        available=True,
+        degraded=degraded,
+        hotspots=hotspots,
+        provider_results=provider_results,
+        errors=tuple(dict.fromkeys(error for error in errors if error)),
+    )
+
+
+def run_candidate_stage(
+    hotspot_result: HotspotStageResult,
+    *,
+    candidates_per_board: int = DEFAULT_CANDIDATES_PER_BOARD,
+    candidate_builder: CandidateBuilder = build_hotspot_candidate_pool,
+) -> CandidateStageResult:
+    """Build candidates only from a previously selected hotspot-stage result."""
+    if not isinstance(hotspot_result, HotspotStageResult) or not hotspot_result.available:
+        return CandidateStageResult(False, True, (), (), ())
+    selected_items = (
+        tuple(hotspot_result.hotspots.get(BOARD_TYPE_INDUSTRY, ()))
+        + tuple(hotspot_result.hotspots.get(BOARD_TYPE_CONCEPT, ()))
+    )
+    if not selected_items:
+        return CandidateStageResult(False, True, (), (), ())
 
     candidate_inputs = tuple(_selected_result(item) for item in selected_items)
+    errors: list[str] = []
     try:
         candidate_pool = candidate_builder(
             candidate_inputs,
@@ -238,17 +281,47 @@ def run_hotspot_pipeline(
         or len(board_results) < len(selected_items)
         or any(not item.available or item.error for item in board_results)
     )
-    degraded = (
-        candidate_stage_degraded
-        or bool(errors)
-        or any(not result.available or result.error for result in provider_results)
-    )
-    return HotspotPipelineResult(
-        available=True,
-        degraded=degraded,
-        hotspots=hotspots,
+    return CandidateStageResult(
+        available=bool(candidate_pool.available and candidates),
+        degraded=candidate_stage_degraded or bool(errors),
         candidates=candidates,
         board_results=board_results,
-        provider_results=provider_results,
         errors=tuple(dict.fromkeys(error for error in errors if error)),
+    )
+
+
+def run_hotspot_pipeline(
+    *,
+    industry_top_n: int = DEFAULT_TOP_HOTSPOTS_PER_TYPE,
+    concept_top_n: int = DEFAULT_TOP_HOTSPOTS_PER_TYPE,
+    candidates_per_board: int = DEFAULT_CANDIDATES_PER_BOARD,
+    industry_hotspot_fetcher: HotspotFetcher = get_industry_hotspots,
+    concept_hotspot_fetcher: HotspotFetcher = get_concept_hotspots,
+    scorer: HotspotScorer = score_hotspots,
+    top_selector: TopSelector = select_top_hotspots,
+    candidate_builder: CandidateBuilder = build_hotspot_candidate_pool,
+) -> HotspotPipelineResult:
+    """Run both stages while preserving the original full-pipeline API."""
+    hotspot_stage = run_hotspot_stage(
+        industry_top_n=industry_top_n,
+        concept_top_n=concept_top_n,
+        industry_hotspot_fetcher=industry_hotspot_fetcher,
+        concept_hotspot_fetcher=concept_hotspot_fetcher,
+        scorer=scorer,
+        top_selector=top_selector,
+    )
+    candidate_stage = run_candidate_stage(
+        hotspot_stage,
+        candidates_per_board=candidates_per_board,
+        candidate_builder=candidate_builder,
+    )
+    errors = tuple(dict.fromkeys(hotspot_stage.errors + candidate_stage.errors))
+    return HotspotPipelineResult(
+        available=hotspot_stage.available,
+        degraded=hotspot_stage.degraded or candidate_stage.degraded,
+        hotspots=hotspot_stage.hotspots,
+        candidates=candidate_stage.candidates,
+        board_results=candidate_stage.board_results,
+        provider_results=hotspot_stage.provider_results,
+        errors=errors,
     )
