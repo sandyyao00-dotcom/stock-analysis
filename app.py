@@ -510,8 +510,8 @@ else:
             st.markdown(f"**[{article.category}] [{article.event_label}]**")
             st.write(article.title)
             if article.summary_or_content:
-                summary = article.summary_or_content
-                st.write(summary if len(summary) <= 300 else f"{summary[:297]}...")
+                article_summary = article.summary_or_content
+                st.write(article_summary if len(article_summary) <= 300 else f"{article_summary[:297]}...")
             st.write(article.explanation)
             published_text = article.published_at.strftime("%Y-%m-%d %H:%M（协调世界时）") if article.published_at else "发布时间未知"
             st.caption(
